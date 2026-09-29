@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+results/
+pretrain/*.ckpt
+pretrain/*.pth
+*.log
+*.png

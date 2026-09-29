@@ -1,0 +1,12 @@
+# Versions the original authors pinned (requirements.txt of the released repo); newer versions work too.
+torch==2.1.2
+torchvision==0.16.2
+numpy==1.26.4
+pillow
+scikit-image==0.25.2
+einops==0.8.2
+ema-pytorch==0.7.9
+tqdm
+
+# optional, only for tools/iqa_metrics.py
+# pyiqa==0.1.16
