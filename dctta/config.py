@@ -4,15 +4,13 @@ import argparse
 def get_parser(adapt=True):
     p = argparse.ArgumentParser(description="DCTTA -- test-time adaptation for all-in-one image restoration")
     # data
-    p.add_argument('--lq_dir', type=str, 
-                   default='testdata/Rain100H/LQ', 
+    p.add_argument('--lq_dir', type=str, default='../AiO-Datasets/Test/enhance/LOL_v2_Real/LQ',
                    help='degraded target images')
-    p.add_argument('--gt_dir', type=str, 
-                   default='testdata/Rain100H/GT', 
+    p.add_argument('--gt_dir', type=str, default='../AiO-Datasets/Test/enhance/LOL_v2_Real/GT',
                    help='ground truth (evaluation only)')
-    p.add_argument('--ckpt', type=str, default='pretrain/model.ckpt',
+    p.add_argument('--ckpt', type=str, default='pretrain/epoch=80.ckpt',
                    help='PromptIR source checkpoint: model.ckpt (3-task) or epoch=80.ckpt (5-task)')
-    p.add_argument('--results_dir', type=str, default='results/Rain100H_DCTTA', 
+    p.add_argument('--results_dir', type=str, default='results/LOLv2_Real_DCTTA', 
                    help='where restored images are written')
     p.add_argument('--no_save_images', action='store_true', help='do not write restored PNGs')
     p.add_argument('--num_workers', type=int, default=16)
@@ -48,6 +46,13 @@ def get_parser(adapt=True):
         p.add_argument('--gen_lr', type=float, default=2e-4)
         p.add_argument('--gen_sum_scale', type=float, default=0.01)
         p.add_argument('--gen_debug_dir', type=str, default=None, help='dump every x_sd here (off by default)')
+        # diagnostics
+        p.add_argument('--log_stats', action='store_true',
+                       help='log per-step means of x_in, y_bar, x_sd, f(x_in), f(x_sd) and the residual y_bar - x_in')
+        p.add_argument('--max_steps', type=int, default=-1, help='stop adaptation after this many patches (-1: all)')
+        p.add_argument('--eval_every', type=int, default=0,
+                       help='every N steps, log PSNR of the student on the first --eval_n images (0: off)')
+        p.add_argument('--eval_n', type=int, default=10)
         # outputs
         p.add_argument('--save_ckpt', type=str, default=None, help='save the adapted student to this path')
     return p

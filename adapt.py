@@ -48,8 +48,11 @@ def main():
 
     tta = setup_dctta(model, lr=args.lr, betas=(args.beta1, args.beta2), train_prefixes=args.train_prefixes,
                       teacher_weight=args.teacher_weight, ema_decay=args.ema_decay, fisher_ratio=args.fisher_ratio,
-                      use_fisher=not args.no_fisher, pixel_weight=args.pixel_weight,
-                      perceptual_weight=args.perceptual_weight, lowpass_weight=args.lowpass_weight, device=device)
+                      use_fisher=not args.no_fisher, pixel_weight=args.pixel_weight, perceptual_weight=args.perceptual_weight, 
+                     lowpass_weight=args.lowpass_weight, device=device, log_stats=args.log_stats)
+
+    # RNG checkpoint: sanity check this number with the original train_test_promptir.py for identical generator init
+    logger.info(f"CPU RNG checksum before generator init: {int(torch.random.get_rng_state().double().sum())}")
 
     generator = ResidualDegradationGenerator(device, train_steps=args.gen_train_steps,
                                              sampling_timesteps=args.gen_sampling_steps, lr=args.gen_lr,
@@ -63,10 +66,31 @@ def main():
         if args.save_fisher:
             torch.save({k: [f.cpu(), m.cpu()] for k, (f, m) in tta.fishers.items()}, args.save_fisher)
 
+    # optional in-loop evaluation on a fixed subset (diagnostics only; uses GT, never feeds adaptation)
+    probe_loader = None
+    if args.eval_every > 0:
+        probe = PairedImageDataset(args.lq_dir, args.gt_dir, base=args.crop_base)
+        probe = torch.utils.data.Subset(probe, list(range(min(args.eval_n, len(probe)))))
+        probe_loader = DataLoader(probe, batch_size=1, shuffle=False, num_workers=0)
+        with torch.random.fork_rng(devices=[]):
+            p0, _ = evaluate(tta.model, probe_loader, device, None, None)
+        logger.info(f"[probe] step 0 PSNR {p0:.3f}")
+
     # --- adaptation ---
     for batch_idx, (names, degrad_patch, _) in tqdm(enumerate(train_loader), total=len(train_loader), desc="Adapting"):
+        if 0 <= args.max_steps <= batch_idx:
+            break
         loss = tta(degrad_patch.to(device), generator, name=names[0], iterations=args.iterations)
-        logger.info(f"[{batch_idx}] {names[0]} loss {loss:.5f}")
+        msg = f"[{batch_idx}] {names[0]} loss {loss:.5f}"
+        if args.log_stats:
+            msg += "  " + "  ".join(f"{k} {v:.4f}" if isinstance(v, float) else f"{k} {v}"
+                                    for k, v in tta.last_stats.items())
+        logger.info(msg)
+        if probe_loader is not None and (batch_idx + 1) % args.eval_every == 0:
+            with torch.random.fork_rng(devices=[]):
+                pk, _ = evaluate(tta.model, probe_loader, device, None, None)
+            tta.model.train()
+            logger.info(f"[probe] step {batch_idx + 1} PSNR {pk:.3f}")
     adapt_time = time.time() - t0
     peak_mem = torch.cuda.max_memory_allocated() / 2 ** 30 if torch.cuda.is_available() else 0.
     logger.info(f"adaptation done in {adapt_time:.1f}s (incl. Fisher), peak memory {peak_mem:.2f} GB")

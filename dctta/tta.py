@@ -81,7 +81,7 @@ def collect_params(model, leaf_names=('weight', 'bias')):
 class DCTTA:
     def __init__(self, model, optimizer, *, teacher_weight=5.0, ema_decay=0.45, fisher_ratio=0.6,
                  use_fisher=True, pixel_weight=1.0, perceptual_weight=0.01, lowpass_weight=0.1,
-                 device='cuda', restore_leaf_names=('weight', 'bias')):
+                 device='cuda', restore_leaf_names=('weight', 'bias'), log_stats=False):
         self.model = model
         self.optimizer = optimizer
         self.device = torch.device(device)
@@ -90,8 +90,16 @@ class DCTTA:
         self.fisher_ratio = fisher_ratio
         self.use_fisher = use_fisher
         self.restore_leaf_names = restore_leaf_names
+        self.log_stats = log_stats
+        self.last_stats = {}
 
-        self.criterion = DCTTALoss(pixel_weight, perceptual_weight, lowpass_weight).to(self.device)
+        # RNG parity with the original: there, PerceptualLoss (VGG19) was built inside compute_loss2,
+        # i.e. only *after* the RDDM generator had been initialised and the DataLoader iterators had
+        # drawn their shuffle/worker seeds. Constructing VGG19 here advances the global CPU RNG
+        # (nn.Conv2d/nn.Linear reset_parameters) and would change the generator's random init, the
+        # patch order and the crops. fork_rng restores the CPU RNG state afterwards.
+        with torch.random.fork_rng(devices=[]):
+            self.criterion = DCTTALoss(pixel_weight, perceptual_weight, lowpass_weight).to(self.device)
 
         # theta_0 (for TIPS restoration and reset) and the EMA teacher
         self.model_state = deepcopy(model.state_dict())
@@ -118,6 +126,21 @@ class DCTTA:
         with torch.no_grad():
             out_student_gt = self.model(x_in)
         out_student = self.model(x_sd)
+
+        if self.log_stats:
+            with torch.no_grad():
+                self.last_stats = {
+                    'x_in': x_in.mean().item(),
+                    'y_bar': y_bar.mean().item(),
+                    'y_bar_max': y_bar.max().item(),
+                    'y_bar_gt1': (y_bar > 1).float().mean().item(),
+                    'res_dc': (y_bar - x_in).mean().item(),        # DC part of the residual G is trained on
+                    'res_abs': (y_bar - x_in).abs().mean().item(),  # its total magnitude
+                    'x_sd': x_sd.mean().item(),
+                    'f_xin': out_student_gt.mean().item(),
+                    'f_xsd': out_student.mean().item(),
+                    'finite': bool(torch.isfinite(out_student).all()),
+                }
 
         loss_s = self.criterion(out_student, out_student_gt)
         loss_t = self.teacher_weight * self.criterion(out_student, y_bar) if self.teacher_weight > 0 else 0.

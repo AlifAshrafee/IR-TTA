@@ -6,8 +6,7 @@ Tang et al., *Degradation-Consistent Test-Time Adaptation for All-in-One Image R
 
 Only the code that the released pipeline actually executes survives; every numerical choice of that
 pipeline is preserved (see `CLEANUP_NOTES.md` for the full removal log, the component map, and the
-places where the released code differs from the paper). `tests/test_equivalence.py` checks the rebuild
-against the original repository tensor-for-tensor.
+places where the released code differs from the paper).
 
 ## Layout
 

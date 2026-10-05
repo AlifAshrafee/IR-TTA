@@ -21,7 +21,6 @@ from evaluate import evaluate
 def main():
     parser = get_parser(adapt=False)
     parser.add_argument('--self_ensemble', action='store_true', help='8-way flip/rot self-ensemble at inference')
-    parser.set_defaults(results_dir='results/Rain100H_PromptIR')
     args = parser.parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     os.makedirs(args.results_dir, exist_ok=True)
