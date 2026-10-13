@@ -8,8 +8,15 @@ def get_parser(adapt=True):
                    help='degraded target images')
     p.add_argument('--gt_dir', type=str, default='../AiO-Datasets/Test/enhance/LOL_v2_Real/GT',
                    help='ground truth (evaluation only)')
+    p.add_argument('--backbone', type=str, default='promptir',
+                   choices=['promptir', 'adair', 'bioir', 'moceir', 'mirage', 'r2r'],
+                   help='source all-in-one model (see dctta/models/__init__.py)')
     p.add_argument('--ckpt', type=str, default='pretrain/epoch=80.ckpt',
-                   help='PromptIR source checkpoint: model.ckpt (3-task) or epoch=80.ckpt (5-task)')
+                   help='released source checkpoint of --backbone, e.g. PromptIR model.ckpt (3-task) / '
+                        'epoch=80.ckpt (5-task); the 3/5-task variant is read off the checkpoint')
+    p.add_argument('--backbone_opts', type=str, nargs='*', default=[],
+                   help='backbone-specific key=value options, e.g. r2r: bank_dir=<dir> oracle_label=1 '
+                        'tlc_size=None; moceir: routing_noise=False')
     p.add_argument('--results_dir', type=str, default='results/LOLv2_Real_DCTTA', 
                    help='where restored images are written')
     p.add_argument('--no_save_images', action='store_true', help='do not write restored PNGs')
@@ -25,8 +32,9 @@ def get_parser(adapt=True):
         p.add_argument('--lr', type=float, default=2e-4)
         p.add_argument('--beta1', type=float, default=0.9)
         p.add_argument('--beta2', type=float, default=0.999)
-        p.add_argument('--train_prefixes', type=str, nargs='+', default=['prompt', 'encoder', 'decoder'],
-                       help="top-level module name substrings that are trainable, or 'all'")
+        p.add_argument('--train_prefixes', type=str, nargs='+', default=None,
+                       help="top-level module name substrings that are trainable, or 'all' "
+                            "(default: the backbone's rule in dctta.models.TRAIN_PREFIXES; promptir: prompt encoder decoder)")
         p.add_argument('--dataset_seed', type=int, default=42,
                        help='the original re-seeds all RNGs with 42 inside the dataset constructor; -1 disables')
         # loss

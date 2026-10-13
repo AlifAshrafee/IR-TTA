@@ -12,17 +12,21 @@ from collections import defaultdict
 import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from dctta.models.promptir import PromptIR            # noqa: E402
-from dctta.tta import DEFAULT_TRAIN_PREFIXES, collect_params, configure_model  # noqa: E402
+from dctta.models import BACKBONES, TRAIN_PREFIXES, build_model, parse_backbone_opts  # noqa: E402
+from dctta.tta import collect_params, configure_model  # noqa: E402
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--train_prefixes', nargs='+', default=list(DEFAULT_TRAIN_PREFIXES))
+    p.add_argument('--backbone', default='promptir', choices=BACKBONES)
+    p.add_argument('--ckpt', default=None, help='optional: pick the variant (3/5-task, tiny/small) from a checkpoint')
+    p.add_argument('--backbone_opts', nargs='*', default=[])
+    p.add_argument('--train_prefixes', nargs='+', default=None)
     p.add_argument('--fisher', type=str, default=None, help="torch.save'd DCTTA.fishers dict")
     args = p.parse_args()
 
-    model = configure_model(PromptIR(decoder=True), args.train_prefixes)
+    prefixes = args.train_prefixes or TRAIN_PREFIXES[args.backbone]
+    model = configure_model(build_model(args.backbone, args.ckpt, **parse_backbone_opts(args.backbone_opts)), prefixes)
     opt_params, opt_names = collect_params(model)
     opt_names = set(opt_names)
 
