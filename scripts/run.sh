@@ -4,11 +4,16 @@
 #   bash scripts/run.sh test                                 # CPU self-tests (after any code change)
 #   GPU=0 bash scripts/run.sh base agg                       # input, source, source applied twice (dev backbones)
 #   GPU=1 bash scripts/run.sh dctta agg                      # DCTTA, PromptIR (only sets not run before)
+#   GPU=0 bash scripts/run.sh probe                          # Q1 spectral-gain oracle + Q2a scale-teacher test
+#   GPU=0 bash scripts/run.sh ref agg                        # HIDE source rows for all six 5-task backbones
 #
 # Stages
 #   test   CPU self-tests
 #   base   input (once), source and source applied twice, for every backbone in $BBS, test + validation sets
 #   dctta  DCTTA as released, PromptIR, test + validation sets (~1 GPU-day for a full suite)
+#   probe  Q1 + Q2a (tools/scale_probe.py, no training), backbones in $BBS, test + validation sets;
+#          report: results/probe/probe_<setting>.md
+#   ref    source only, HIDE, all six 5-task backbones (the co-author's reference table has no HIDE column)
 #   agg    results/$EXP/summary.csv + tables (table_<setting>_<backbone>.md, table_backbones.md)
 #   guard  DCTTA regression guard (adapt.py vs harness, Rain100H 3-task) -- only after touching dctta/
 set -euo pipefail
@@ -70,6 +75,26 @@ stage_dctta() {
   for S in $SETTINGS; do
     M=$(model_args promptir $S) || continue
     for T in ${TARGETS[$S]}; do run --method dctta $M --target $T $(size_args $T); done
+  done
+}
+
+stage_probe() {
+  local B S M T
+  for B in $BBS; do for S in $SETTINGS; do
+    M=$(model_args $B $S) || continue
+    for T in ${TARGETS[$S]}; do
+      CUDA_VISIBLE_DEVICES=$GPU python tools/scale_probe.py --num_workers $NW --exp probe $M --target $T $(size_args $T)
+    done
+  done; done
+  python tools/scale_probe.py --report results/probe > /dev/null
+  echo "tables: results/probe/probe_*.md"
+}
+
+stage_ref() {
+  local B M
+  for B in promptir adair bioir moceir mirage r2r; do
+    M=$(model_args $B 5task) || continue
+    run --method source $M --target HIDE
   done
 }
 

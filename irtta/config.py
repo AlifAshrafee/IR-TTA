@@ -19,7 +19,7 @@ def get_parser():
     g.add_argument('--crop_base', type=int, default=16)
     g.add_argument('--num_workers', type=int, default=8)
     g.add_argument('--max_images', type=int, default=0,
-                   help='smoke tests only: evaluate/stream an evenly spaced subset of this many images (0: all)')
+                   help='adapt and evaluate on an evenly spaced subset of this many images (validation sets: 300; 0: all)')
 
     g = p.add_argument_group('source model')
     g.add_argument('--ckpt', type=str, required=True)

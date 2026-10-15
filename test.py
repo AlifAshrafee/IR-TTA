@@ -1,6 +1,6 @@
 """Evaluate an un-adapted source model on a target set (was ``test_promptir.py``).
 
-    python test.py --lq_dir testdata/Rain100H/LQ --gt_dir testdata/Rain100H/GT --ckpt pretrain/model.ckpt
+    python test.py --lq_dir <LQ> --gt_dir <GT> --ckpt pretrain/model.ckpt
     python test.py --backbone adair --ckpt pretrain/adair/adair3d.ckpt --lq_dir ... --gt_dir ...
 
 ``--self_ensemble`` reports the "*" rows of the paper (8-way geometric self-ensemble at inference,

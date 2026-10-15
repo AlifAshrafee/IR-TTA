@@ -29,12 +29,13 @@ dctta/
   tta.py, losses.py, rddm/    DCTTA: self-ensemble pseudo-label, RDDM generator, TIPS, EMA teacher
   data.py, metrics.py, utils.py, config.py
 configs/datasets.json         dataset registry ({root} = ../AiO-Datasets)
-configs/sota_{3,5}task.csv    co-author's evaluation of the SOTA backbones (reference rows)
+configs/sota_{3,5}task.csv    co-author's evaluation of the SOTA backbones (reference rows; no HIDE: `run.sh ref`)
 tools/aggregate.py            result.json files -> runs.csv / summary.csv
 tools/table.py                summary.csv -> one table per backbone x setting + cross-backbone summary
 tools/check_registry.py       checks every dataset folder (pairs, sizes)
 tools/check_backbones.py      load + forward check of the released checkpoints
-scripts/run.sh                stages: test / base / dctta / agg / guard
+tools/scale_probe.py          Q1 spectral-gain oracle + Q2a scale-teacher test (evaluation only)
+scripts/run.sh                stages: test / base / dctta / probe / ref / agg / guard
 tests/test_harness.py         CPU self-tests incl. adapt.py <-> run_tta.py parity
 pretrain/README.md            where the checkpoints go
 ```
@@ -53,6 +54,8 @@ bash scripts/run.sh test                    # CPU self-tests
 ```bash
 GPU=0 bash scripts/run.sh base agg          # input, source, source applied twice (BBS="promptir r2r" by default)
 GPU=1 bash scripts/run.sh dctta agg         # DCTTA on PromptIR
+GPU=0 bash scripts/run.sh probe             # Q1 + Q2a -> results/probe/probe_<setting>.md
+GPU=0 bash scripts/run.sh ref agg           # HIDE source rows for all six 5-task backbones
 # single runs
 python run_tta.py --method source --target HIDE --backbone r2r --ckpt pretrain/r2r/train_ckpt_5D_finetune/last.ckpt
 python run_tta.py --method dctta --target Rain100H --ckpt pretrain/model.ckpt --seed 23 --dataset_seed 42

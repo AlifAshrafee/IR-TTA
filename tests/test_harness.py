@@ -14,6 +14,7 @@ What is checked:
   * every backbone builds and gets LN / LoRA subsets; zero-init LoRA keeps each backbone's output
   * self-ensemble member stacking does not change the fused pseudo-label
   * PARITY: run_tta.py --method dctta reproduces adapt.py exactly (same PSNR, same RNG checksum)
+  * Q1/Q2a probe (tools/scale_probe.py): exact band split, padded forward, oracle bounds, same PSNR as the harness
   * end-to-end runs of identity / source / flow / transfer / dctta, all regimes, probe, aggregator, other backbones
 """
 import json
@@ -285,8 +286,35 @@ def test_end_to_end():
     assert os.path.exists(os.path.join(t['dir'], 'results', 'test', 'summary.csv'))
 
 
+def test_scale_probe():
+    """Q1/Q2a probe: exact band split, padded forward, oracle bounds, report."""
+    import tools.scale_probe as sp
+    g = torch.Generator().manual_seed(3)
+    r = torch.randn(1, 3, 50, 70, generator=g)
+    lo, mid, hi = sp.split_bands(r, 1.5, 6.0)
+    assert torch.allclose(lo + mid + hi, r, atol=1e-5)
+    assert lo.std() < r.std() and abs(float(sp.gaussian_blur(torch.ones(1, 3, 40, 40), 2.0).mean()) - 1) < 1e-5
+    m = _model(5)
+    with torch.no_grad():
+        x = torch.rand(1, 3, 50, 70, generator=g)
+        assert sp.forward(m, x).shape == x.shape
+        x = torch.rand(1, 3, 64, 64, generator=g)
+        assert torch.equal(sp.forward(m, x), m(x))                          # aligned input: no padding
+    assert sp.downscale(x, 2).shape[-2:] == (32, 32) and sp.downscale(x, 3).shape[-2:] == (21, 21)
+    t = _setup_data()
+    out = os.path.join(t['dir'], 'results')
+    res = sp.main(['--target', 'Tiny', '--ckpt', t['ckpt'], '--registry', t['reg'], '--source', 'tiny',
+                   '--num_workers', '0', '--out_root', out, '--exp', 'probe', '--overwrite'])
+    assert res['n'] == 3 and res['source_psnr'] >= res['source_unclipped_psnr'] - 1e-6, res
+    assert res['band_psnr'] >= res['global_psnr'] - 1e-6 >= res['source_unclipped_psnr'] - 2e-6, res
+    r_src = _run(['--method', 'source', '--target', 'Tiny'])
+    assert abs(res['source_psnr'] - r_src['psnr']) < 1e-4, (res['source_psnr'], r_src['psnr'])   # same metric
+    sp.main(['--report', os.path.join(out, 'probe')])
+    assert os.path.exists(os.path.join(out, 'probe', 'probe_tiny.md'))
+
+
 def main():
-    tests = [(k, v) for k, v in globals().items() if k.startswith('test_') and callable(v)]
+    tests =[(k, v) for k, v in globals().items() if k.startswith('test_') and callable(v)]
     failed = 0
     for name, fn in tests:
         try:

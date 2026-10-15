@@ -1,6 +1,6 @@
 """DCTTA: adapt a source model on a target test set, then evaluate (was ``train_test_promptir.py``).
 
-    python adapt.py --lq_dir testdata/Rain100H/LQ --gt_dir testdata/Rain100H/GT --ckpt pretrain/model.ckpt
+    python adapt.py --lq_dir <LQ> --gt_dir <GT> --ckpt pretrain/model.ckpt
     python adapt.py --backbone bioir --ckpt pretrain/bioir/BioIR3D.ckpt --lq_dir ... --gt_dir ...
 
 Regime: transductive, one pass over the target set (batch 1, one adaptation step per random
