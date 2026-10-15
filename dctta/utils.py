@@ -75,11 +75,12 @@ def rot(x, k):
     return torch.rot90(x, k, dims=(-2, -1))
 
 
-def self_ensemble(fn, x, fuse='mean'):
+def self_ensemble(fn, x, fuse='mean', return_members=False):
     """8-way flip/rotation self-ensemble of ``fn`` (a restorer) applied to ``x``.
 
     Same eight members and the same summation order as the original code:
-    flip+rot{0,90,180,270} then rot{0,90,180,270}.
+    flip+rot{0,90,180,270} then rot{0,90,180,270}. ``return_members=True`` additionally returns
+    the 8 aligned members stacked as ``(8, B, C, H, W)`` (used by the reliability filter).
     """
     outs = [
         hflip(fn(hflip(x))),
@@ -92,10 +93,12 @@ def self_ensemble(fn, x, fuse='mean'):
         rot(fn(rot(x, 3)), -3),
     ]
     if fuse == 'mean':
-        return (outs[0] + outs[1] + outs[2] + outs[3] + outs[4] + outs[5] + outs[6] + outs[7]) / 8.
+        fused = (outs[0] + outs[1] + outs[2] + outs[3] + outs[4] + outs[5] + outs[6] + outs[7]) / 8.
     elif fuse == 'median':
-        return torch.stack(outs, 0).median(dim=0).values
-    raise ValueError(fuse)
+        fused = torch.stack(outs, 0).median(dim=0).values
+    else:
+        raise ValueError(fuse)
+    return (fused, torch.stack(outs, 0)) if return_members else fused
 
 
 class SelfEnsemble(torch.nn.Module):

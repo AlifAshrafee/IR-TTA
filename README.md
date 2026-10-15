@@ -1,74 +1,93 @@
-# DCTTA (cleaned) — Degradation-Consistent Test-Time Adaptation for All-in-One Image Restoration
+# IR-TTA — test-time adaptation for all-in-one image restoration
 
-A stripped-down, dependency-light rebuild of the official implementation of
-Tang et al., *Degradation-Consistent Test-Time Adaptation for All-in-One Image Restoration*, CVPR 2026
-(original: https://github.com/tonia86/DCTTA, built on PromptIR and RDDM).
+Research code for TTA on all-in-one (AiO) restoration models. It contains:
 
-Only the code that the released pipeline actually executes survives; every numerical choice of that
-pipeline is preserved (see `CLEANUP_NOTES.md` for the full removal log, the component map, and the
-places where the released code differs from the paper).
+* **DCTTA** (Tang et al., CVPR 2026), a cleaned, numerically identical rebuild of the released code
+  (`adapt.py`, `dctta/`; see `CLEANUP_NOTES.md`): the baseline to beat.
+* **Six AiO backbones** with their official checkpoints: PromptIR, AdaIR, BioIR, MoCE-IR, MIRAGE, R2R.
+* **The harness** (`run_tta.py`, `irtta/`): one run = (method, backbone, source, target, subset, anchor, regime,
+  seed), with fixed RNG handling, retention on the source tasks, cost logging and result tables.
+
+The plan and the current state of the research live in the project doc `ir_tta_build_order.md`.
 
 ## Layout
 
 ```
-adapt.py                      DCTTA adaptation + evaluation      (was train_test_promptir.py)
-test.py                       un-adapted source baseline (+ "*" self-ensemble rows)  (was test_promptir.py)
-evaluate.py                   full-image PSNR/SSIM loop shared by both scripts
+run_tta.py                    harness entry point
+irtta/
+  methods.py                  identity (input), source, flow (source applied repeatedly), transfer (parked), dctta
+  subsets.py                  adapted parameters: ln (every LayerNorm), lora<r> (every dense 1x1 conv), full (DCTTA rule)
+  anchors.py                  none / L2-to-theta_0 (TIPS only inside DCTTA)
+  regimes.py                  transductive / online / episodic loops with cost timing
+  evaluation.py               per-image PSNR/SSIM/(LPIPS)/brightness drift; probe
+  degrade.py                  physical degradation primitives (rain/haze -> blur -> exposure -> noise)
+  data.py, config.py          dataset registry (configs/datasets.json), clean content bank; arguments
+adapt.py, test.py, evaluate.py   DCTTA and the un-adapted source, standalone (as released)
 dctta/
-  config.py                   argparse options (only the ones that are read)
-  data.py                     AdaptationPatchDataset (random crops), PairedImageDataset (evaluation)
-  losses.py                   L1 + VGG19 perceptual + Haar low-pass loss; Charbonnier for the Fisher pass
-  metrics.py                  PSNR / SSIM (scikit-image, RGB)
-  tta.py                      DCTTA: self-ensemble pseudo-label, online generator, losses, TIPS, EMA teacher
-  utils.py                    seeding, checkpoint loading, dihedral transforms, self-ensemble, image saving
-  models/promptir.py          PromptIR backbone (verbatim)
-  rddm/unet.py                RDDM U-Net (verbatim blocks)
-  rddm/diffusion.py           residual diffusion, pred_res objective, DDIM sampler
-  rddm/generator.py           online-trained degradation generator (replaces Trainer + 2 wrappers)
-tools/iqa_metrics.py          optional pyiqa evaluation (LPIPS, DISTS, NIQE, MUSIQ, CLIP-IQA)
-tests/test_equivalence.py     numerical equivalence against the original repo
-pretrain/                     PromptIR checkpoints (see pretrain/README.md)
-testdata/<set>/{LQ,GT}/       paired target images
+  models/__init__.py          backbone registry: build_model(name, ckpt), TRAIN_PREFIXES
+  models/*.py                 PromptIR, AdaIR, BioIR, MoCE-IR, MIRAGE, R2R (official parameter names)
+  tta.py, losses.py, rddm/    DCTTA: self-ensemble pseudo-label, RDDM generator, TIPS, EMA teacher
+  data.py, metrics.py, utils.py, config.py
+configs/datasets.json         dataset registry ({root} = ../AiO-Datasets)
+configs/sota_{3,5}task.csv    co-author's evaluation of the SOTA backbones (reference rows)
+tools/aggregate.py            result.json files -> runs.csv / summary.csv
+tools/table.py                summary.csv -> one table per backbone x setting + cross-backbone summary
+tools/check_registry.py       checks every dataset folder (pairs, sizes)
+tools/check_backbones.py      load + forward check of the released checkpoints
+scripts/run.sh                stages: test / base / dctta / agg / guard
+tests/test_harness.py         CPU self-tests incl. adapt.py <-> run_tta.py parity
+pretrain/README.md            where the checkpoints go
 ```
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
-# put model.ckpt / epoch=80.ckpt into pretrain/, and e.g. Rain100H into testdata/Rain100H/{LQ,GT}
+# checkpoints: see pretrain/README.md;   data: ../AiO-Datasets/{Test,Train}/<task>/<set>/{LQ,GT}
+python tools/check_registry.py              # every dataset pairs up
+bash scripts/run.sh test                    # CPU self-tests
 ```
 
 ## Run
 
 ```bash
-# source model, no adaptation (paper's "PromptIR" rows); add --self_ensemble for the "PromptIR*" rows
-python test.py  --lq_dir testdata/Rain100H/LQ --gt_dir testdata/Rain100H/GT --ckpt pretrain/model.ckpt
-
-# DCTTA (defaults = released configuration)
-python adapt.py --lq_dir testdata/Rain100H/LQ --gt_dir testdata/Rain100H/GT --ckpt pretrain/model.ckpt \
-                --results_dir results/Rain100H_DCTTA
-
-# 5-task source
-python adapt.py ... --ckpt pretrain/epoch=80.ckpt
+GPU=0 bash scripts/run.sh base agg          # input, source, source applied twice (BBS="promptir r2r" by default)
+GPU=1 bash scripts/run.sh dctta agg         # DCTTA on PromptIR
+# single runs
+python run_tta.py --method source --target HIDE --backbone r2r --ckpt pretrain/r2r/train_ckpt_5D_finetune/last.ckpt
+python run_tta.py --method dctta --target Rain100H --ckpt pretrain/model.ckpt --seed 23 --dataset_seed 42
 ```
 
-Reference numbers (PromptIR 3-task source, Rain100H, from the log shipped with the original repo):
-un-adapted 15.550 dB / 0.4868, after DCTTA 21.269 dB / 0.6179 (paper Table: 15.64 -> 20.21).
+Results: `results/<exp>/<run_id>/{run.log, config.json, result.json, per_image.csv, stats.jsonl}`, tables in
+`results/<exp>/table_<setting>_<backbone>.md` and `table_backbones.md`. Finished runs are skipped
+(`--overwrite` re-runs).
 
-## Ablation switches (all default to the released values)
+| flag | values |
+|---|---|
+| model | `--backbone promptir/adair/bioir/moceir/mirage/r2r`, `--ckpt`, `--backbone_opts k=v ...` (moceir: `routing_noise=False`; r2r: `bank_dir=`, `oracle_label=`), `--source 3task/5task` (inferred from the checkpoint path) |
+| `--method` | `identity`, `source`, `flow` (`--ext_alpha`, `--n_apply`), `transfer`, `dctta` |
+| `--subset` | `ln`, `lora<r>`, `full`, `all`, `re:<regex>`; `+`-joined |
+| `--anchor` | `none`, `l2` (`--anchor_lambda`); `tips` only with `--method dctta` |
+| `--regime` | `transductive` (`--max_steps`, `--epochs`), `online` / `episodic` (`--steps_per_image`, `--online_predict`) |
+| data | `--target <registry name>` or `--lq_dir/--gt_dir`; `--max_images N` adapts and evaluates on the same evenly spaced N images |
+| seeds | `--seed S`, `--dataset_seed` (default = seed; the DCTTA reference used 23/42) |
 
-| flag | component | default |
-|---|---|---|
-| `--no_fisher`, `--fisher_ratio` | TIPS parameter freezing (per-tensor top-ratio restored to source) | on, 0.6 |
-| `--teacher_weight` | pseudo-label distillation weight (alpha) | 5 |
-| `--ema_decay` | teacher EMA decay (eta) | 0.45 |
-| `--pixel_weight --perceptual_weight --lowpass_weight` | loss terms | 1 / 0.01 / 0.1 |
-| `--train_prefixes` | which top-level PromptIR modules adapt (`all` for everything) | prompt encoder decoder |
-| `--gen_train_steps --gen_sampling_steps --gen_lr --gen_sum_scale` | RDDM generator | 5 / 5 / 2e-4 / 0.01 |
-| `--gen_debug_dir` | dump every redegraded image x_sd | off |
-| `--iterations`, `--patch_size`, `--lr` | adaptation loop | 1 / 320 / 2e-4 |
-| `--dataset_seed` | the original re-seeds all RNGs to 42 inside the dataset ctor; `-1` disables | 42 |
+Rules baked in:
+- Anything the harness adds (LoRA init, LPIPS, probes) stays off the global RNG.
+- With `--seed 23 --dataset_seed 42`, the transductive RNG checksum is 319577, and `--method dctta` equals `adapt.py`.
+- Each source is evaluated only on its own degradation families.
+- Hyperparameters are selected on the `*_val` entries (official train splits), never on test.
+- MoCE-IR runs with deterministic routing.
+- R2R retrieves blind (no task label at test time); its official test scripts pass the ground-truth task id instead.
 
-Swapping the generator: anything with `fit_and_sample(x_in, y_bar, name) -> x_sd` works in place of
-`ResidualDegradationGenerator` (e.g. residual recombination, a CNN residual predictor). Swapping the
-backbone: wrap it so that `model(x) -> tensor` and pass the right `--train_prefixes`.
+## DCTTA standalone (as released)
+
+```bash
+python test.py  --lq_dir <LQ> --gt_dir <GT> --ckpt pretrain/model.ckpt            # source (+ --self_ensemble)
+python adapt.py --lq_dir <LQ> --gt_dir <GT> --ckpt pretrain/model.ckpt --results_dir results/x
+python adapt.py --backbone r2r --ckpt pretrain/r2r/train_ckpt_3D_finetune/last.ckpt --lq_dir <LQ> --gt_dir <GT>
+```
+
+Reference (PromptIR 3-task, Rain100H): source 15.550 dB, DCTTA 21.269 dB (log shipped with the original repo;
+paper 15.64 -> 20.21). Its switches (`--no_fisher`, `--teacher_weight`, `--ema_decay`, loss weights,
+`--train_prefixes`, generator steps, `--dataset_seed`) default to the released values; see `dctta/config.py`.

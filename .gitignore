@@ -1,7 +1,12 @@
 __pycache__/
 *.pyc
-results/
-pretrain/*.ckpt
-pretrain/*.pth
 *.log
+results/
+pretrain/**/*.ckpt
+pretrain/**/*.pth
+pretrain/**/*.pt
 *.png
+*.csv
+*.pt
+*.txt
+fisher/

@@ -1,0 +1,305 @@
+"""CPU self-tests for the harness. Run before any GPU experiment:
+
+    CUDA_VISIBLE_DEVICES= python tests/test_harness.py          # or: python -m pytest tests/test_harness.py -q
+
+Uses a randomly initialised PromptIR saved as a fake Lightning checkpoint and three synthetic 96x96
+images, so it needs no data, no checkpoints and no downloads (VGG is disabled with
+--perceptual_weight 0). Takes a few minutes on CPU (the RDDM generator is the slow part).
+
+What is checked:
+  * zero-init LoRA reproduces the source output; subset construction leaves the global RNG alone
+  * subset contents (LN / LoRA ranks / DCTTA's 'full' rule)
+  * L2 anchor: zero at theta_0, closed-form value (incl. LoRA delta weights)
+  * degradation operators: shapes, range, blur kernels mean-preserving, exposure matching (fit / clean)
+  * every backbone builds and gets LN / LoRA subsets; zero-init LoRA keeps each backbone's output
+  * self-ensemble member stacking does not change the fused pseudo-label
+  * PARITY: run_tta.py --method dctta reproduces adapt.py exactly (same PSNR, same RNG checksum)
+  * end-to-end runs of identity / source / flow / transfer / dctta, all regimes, probe, aggregator, other backbones
+"""
+import json
+import os
+import sys
+import tempfile
+from unittest import mock
+
+os.environ.setdefault('CUDA_VISIBLE_DEVICES', '')
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+import numpy as np                                   # noqa: E402
+import torch                                         # noqa: E402
+from PIL import Image                                # noqa: E402
+
+torch.cuda.is_available()  # lock the device count before any script touches CUDA_VISIBLE_DEVICES
+torch.set_num_threads(max(1, min(8, os.cpu_count() or 1)))
+
+from dctta.models.promptir import PromptIR           # noqa: E402
+from dctta.tta import DEFAULT_TRAIN_PREFIXES, collect_params, configure_model  # noqa: E402
+from dctta.utils import self_ensemble                # noqa: E402
+from irtta.anchors import L2Anchor                    # noqa: E402
+from irtta import degrade as D                       # noqa: E402
+from irtta.subsets import apply_subset               # noqa: E402
+
+_TMP = {}
+
+
+def _model(seed=0):
+    torch.manual_seed(seed)
+    return PromptIR(decoder=True).eval()
+
+
+def _x(seed=1, s=64):
+    g = torch.Generator().manual_seed(seed)
+    return torch.rand(1, 3, s, s, generator=g)
+
+
+# --------------------------------------------------------------------------- #
+def test_lora_zero_init_and_rng():
+    m = _model()
+    x = _x()
+    with torch.no_grad():
+        y0 = m(x)
+    state = torch.random.get_rng_state()
+    sub = apply_subset(m, 'lora4', seed=3)
+    assert torch.equal(state, torch.random.get_rng_state()), "subset construction consumed the global RNG"
+    with torch.no_grad():
+        assert torch.equal(m(x), y0), "zero-init LoRA changed the output"
+    assert sub.lora_modules and all(n.endswith('lora_A') or n.endswith('lora_B') for n in sub.names)
+
+
+def test_subset_contents():
+    ln = apply_subset(_model(), 'ln').names
+    assert ln and all(n.rsplit('.', 1)[1] in ('weight', 'bias') for n in ln)
+    assert any('.norm1.body.' in n for n in ln) and any('.norm2.body.' in n for n in ln)
+    s4, s16 = apply_subset(_model(), 'lora4'), apply_subset(_model(), 'lora16')
+    assert s16.n_params > s4.n_params and all(m.lora_A.shape[0] == 16 for m in s16.lora_modules.values())
+    assert any(k.endswith('attn.qkv.weight') for k in s16.lora_modules), "LoRA missed the attention projections"
+    full = apply_subset(_model(), 'full')
+    _, ref = collect_params(configure_model(_model(), DEFAULT_TRAIN_PREFIXES))
+    assert full.names == ref, "'full' differs from DCTTA's prefix rule"
+    for bad in ('prompt', 'prompt_offset'):
+        try:
+            apply_subset(_model(), bad)
+            raise AssertionError(f"removed subset '{bad}' still accepted")
+        except ValueError:
+            pass
+
+
+def test_l2_anchor():
+    m = _model()
+    sub = apply_subset(m, 'ln+lora4')
+    a = L2Anchor(sub, lam=2.0)
+    assert float(a.penalty()) == 0.0
+    p = next(p for n, p in zip(sub.names, sub.params) if n.endswith('norm1.body.weight'))
+    with torch.no_grad():
+        p.add_(0.1)
+    expect = 0.5 * 2.0 * (0.1 ** 2) * p.numel()
+    assert abs(float(a.penalty()) - expect) < 1e-4 * expect
+    mod = next(iter(sub.lora_modules.values()))
+    with torch.no_grad():
+        mod.lora_B.fill_(1.0)
+    expect += 0.5 * 2.0 * float((mod.delta_weight() ** 2).sum())
+    assert abs(float(a.penalty()) - expect) < 1e-3 * expect
+
+
+def test_degradations():
+    g = torch.Generator().manual_seed(0)
+    c = torch.rand(3, 3, 64, 64, generator=g)
+    for fams in [[f] for f in D.FAMILIES] + [['compose']]:
+        y, cc, used = D.degrade_batch(c, fams, g)
+        assert y.shape == c.shape and cc.shape == c.shape and len(used) == 3, fams
+        assert float(y.min()) >= 0 and float(y.max()) <= 1 and torch.isfinite(y).all(), fams
+        assert not torch.allclose(y, cc), f"{fams} left the image unchanged"
+        if fams != ['compose']:
+            assert used == [D.chain_label(D.FAMILY_CHAINS[fams[0]])] * 3 and torch.equal(cc, c), fams
+    for _ in range(20):
+        k = D.random_blur_kernel(g)
+        assert k.shape == (D.KSIZE, D.KSIZE) and float(k.min()) >= 0 and abs(float(k.sum()) - 1) < 1e-5
+    flat = torch.full((1, 3, 64, 64), 0.4)
+    assert torch.allclose(D.op_blur(flat, g), flat, atol=1e-5), "blur is not mean-preserving"
+    # exposure matching. fit: the degraded image matches the target, solved through the chain; clean: the clean
+    # scene is gained to the target before degrading; exposure-changing chains solve their own parameter
+    c1 = c[:1] * 0.5 + 0.25
+    rain = D.FAMILY_CHAINS['rain']
+    for fam, tfit in (('blur', [0.10, 0.08, 0.06]), ('rain', [0.45, 0.40, 0.35])):  # reachable targets
+        tfit = torch.tensor(tfit).view(1, 3, 1, 1)
+        y, cc = D.apply_chain(c1, D.FAMILY_CHAINS[fam], g, tfit, 'fit')
+        assert torch.allclose(y.mean(dim=(2, 3), keepdim=True), tfit, atol=4e-3), \
+            f"fit: {fam} output not matched: {y.mean(dim=(2, 3)).tolist()} vs {tfit.flatten().tolist()}"
+    tm = torch.tensor([0.40, 0.35, 0.30]).view(1, 3, 1, 1)
+    y, cc = D.apply_chain(c1, rain, g, tm, 'clean')
+    assert y.mean() > tm.mean() + 1e-3, "clean: rain must make the degraded image brighter than the target"
+    y, cc = D.apply_chain(c1, rain, g, tm, 'fit')
+    assert cc.mean() < y.mean(), "fit: the rain-free scene must be darker than the rainy observation"
+    y, cc = D.apply_chain(c1, rain, g, tm, 'clean')
+    assert torch.allclose(cc.mean(dim=(2, 3), keepdim=True), tm, atol=2e-3), "clean: scene not gained to target"
+    st = g.get_state()
+    D.apply_chain(c1, rain, g, tm, 'fit')
+    st_fit = g.get_state()
+    g.set_state(st)
+    D.apply_chain(c1, rain, g, tm, 'clean')
+    assert torch.equal(st_fit, g.get_state()), "fit must consume the same random draws as one chain pass"
+    tm = torch.tensor([0.10, 0.08, 0.06]).view(1, 3, 1, 1)                   # a dark target patch
+    y, cc = D.apply_chain(c1, {'scene': None, 'blur': False, 'exposure': True, 'noise': False}, g, tm)
+    assert torch.equal(cc, c1), "low-light: the clean image must keep its natural exposure"
+    assert abs(float(y.mean()) - float(tm.mean())) < 5e-3, "exposure gain not fitted to the target"
+    hm = c1.mean(dim=(2, 3), keepdim=True) + 0.05                          # reachable with A in [0.3, 1]
+    y, cc = D.apply_chain(c1, D.FAMILY_CHAINS['haze'], g, hm)
+    assert torch.equal(cc, c1) and torch.allclose(y.mean(dim=(2, 3), keepdim=True), hm, atol=1e-3), \
+        "haze airlight not fitted to the target"
+    labels = {D.chain_label(D.random_chain(g)) for _ in range(200)}
+    assert 'none' not in labels and len(labels) > 10 and any(l.count('+') >= 2 for l in labels), labels
+    assert D.parse_families('oracle', 'deblur') == ['blur'] and len(D.parse_families('all')) == 5
+    assert D.parse_families('rain+haze') == ['rain', 'haze'] and D.parse_families('compose') == ['compose']
+
+
+def test_self_ensemble_members():
+    m, x = _model(), _x()
+    with torch.no_grad():
+        y = self_ensemble(m, x)
+        y2, mem = self_ensemble(m, x, return_members=True)
+    assert torch.equal(y, y2) and mem.shape[0] == 8 and torch.allclose(mem.mean(0), y, atol=1e-6)
+
+
+def test_backbones():
+    """Every backbone (random weights): builds, LN and LoRA subsets are non-empty, zero-init LoRA keeps the output,
+    the DCTTA 'full' rule selects parameters. R2R is only built (its forward needs the released degradation bank)."""
+    from dctta.models import BACKBONES, TRAIN_PREFIXES, build_model
+    x = _x(s=64)
+    for name in BACKBONES:
+        torch.manual_seed(0)
+        opts = {'routing_noise': False} if name == 'moceir' else {}
+        m = build_model(name, None, **opts).eval()
+        assert apply_subset(build_model(name, None, **opts), 'ln').names, f"{name}: no LayerNorm found"
+        assert apply_subset(build_model(name, None, **opts), 'full', train_prefixes=TRAIN_PREFIXES[name]).params
+        if name == 'r2r':
+            assert apply_subset(m, 'lora16').lora_modules
+            continue
+        with torch.no_grad():
+            y0 = m(x)
+            sub = apply_subset(m, 'lora16', seed=1)
+            m.eval()
+            y1 = m(x)
+        assert y0.shape == x.shape and sub.lora_modules, name
+        assert torch.allclose(y0, y1, atol=1e-6), f"{name}: zero-init LoRA changed the output"
+
+
+# --------------------------------------------------------------------------- #
+def _setup_data():
+    if _TMP:
+        return _TMP
+    d = tempfile.mkdtemp(prefix='irtta_test_')
+    rs = np.random.RandomState(0)
+    for sub in ('LQ', 'GT'):
+        os.makedirs(os.path.join(d, 'tiny', sub))
+    for i in range(3):
+        gt = (rs.rand(96, 96, 3) * 255).astype(np.uint8)
+        lq = np.clip(gt.astype(float) * 0.7 + rs.randn(96, 96, 3) * 10, 0, 255).astype(np.uint8)
+        Image.fromarray(gt).save(os.path.join(d, 'tiny', 'GT', f'img{i}.png'))
+        Image.fromarray(lq).save(os.path.join(d, 'tiny', 'LQ', f'img{i}.png'))
+    m = _model(5)
+    ckpt = os.path.join(d, 'fake.ckpt')
+    torch.save({'state_dict': {'net.' + k: v for k, v in m.state_dict().items()}}, ckpt)
+    from dctta.models import build_model
+    torch.manual_seed(6)
+    ad = build_model('adair', None)
+    os.makedirs(os.path.join(d, 'adair'))
+    ckpt_adair = os.path.join(d, 'adair', 'adair3d.ckpt')
+    torch.save({'state_dict': {'net.' + k: v for k, v in ad.state_dict().items()}}, ckpt_adair)
+    reg = {'_root': d, '_source_sets': {'tiny': ['TinyNoise']}, '_banks': {'default': '{root}/tiny/GT'},
+           'Tiny': {'lq': '{root}/tiny/LQ', 'gt': '{root}/tiny/GT', 'split': 'test', 'task': 'deblur'},
+           'TinyNoise': {'gt': '{root}/tiny/GT', 'noise_sigma': 25, 'split': 'source', 'task': 'denoise'}}
+    regp = os.path.join(d, 'registry.json')
+    json.dump(reg, open(regp, 'w'))
+    with open(os.path.join(d, 'probe.txt'), 'w') as f:
+        f.write("img0.png,normal\nimg2.png,hard\n")
+    _TMP.update(dir=d, ckpt=ckpt, ckpt_adair=ckpt_adair, reg=regp, probe=os.path.join(d, 'probe.txt'),
+                lq=os.path.join(d, 'tiny', 'LQ'), gt=os.path.join(d, 'tiny', 'GT'))
+    return _TMP
+
+
+def _run(extra):
+    import run_tta
+    t = _setup_data()
+    base = ['--ckpt', t['ckpt'], '--registry', t['reg'], '--source', 'tiny', '--patch_size', '64',
+            '--num_workers', '0', '--out_root', os.path.join(t['dir'], 'results'), '--exp', 'test',
+            '--perceptual_weight', '0', '--overwrite']
+    return run_tta.main(base + extra)
+
+
+def test_parity_with_adapt_py():
+    """The key regression guard: harness DCTTA == reference adapt.py (same numbers, same checksum)."""
+    import adapt
+    t = _setup_data()
+    common = ['--lq_dir', t['lq'], '--gt_dir', t['gt'], '--ckpt', t['ckpt'], '--patch_size', '64',
+              '--num_workers', '0', '--max_steps', '3', '--perceptual_weight', '0', '--gen_train_steps', '2']
+    with mock.patch.object(sys, 'argv', ['adapt.py'] + common + [
+            '--results_dir', os.path.join(t['dir'], 'adapt_ref'), '--no_save_images', '--gpu', '']):
+        ref_psnr, ref_ssim = adapt.main()
+    res = _run(['--method', 'dctta', '--lq_dir', t['lq'], '--gt_dir', t['gt'], '--max_steps', '3',
+                '--gen_train_steps', '2', '--seed', '23', '--dataset_seed', '42', '--registry', t['reg']])
+    assert res['psnr'] == ref_psnr and res['ssim'] == ref_ssim, \
+        f"parity broken: adapt.py {ref_psnr:.6f}/{ref_ssim:.6f} vs run_tta {res['psnr']:.6f}/{res['ssim']:.6f}"
+    print(f"    parity OK: PSNR {ref_psnr:.6f}, checksum {res['rng_checksum']}")
+
+
+def test_end_to_end():
+    import tools.aggregate as agg
+    t = _setup_data()
+    r_id = _run(['--method', 'identity', '--target', 'Tiny'])
+    assert r_id['n_params_adapted'] == 0 and r_id['psnr'] > 0
+    r_src = _run(['--method', 'source', '--target', 'Tiny', '--retention'])
+    for fam in ('oracle', 'all'):
+        r = _run(['--method', 'transfer', '--families', fam, '--target', 'Tiny', '--max_steps', '2',
+                  '--bank_patch', '64', '--bank_batch', '2', '--log_stats', '--retention'])
+        assert r['steps'] == 2 and sum(r['families_used'].values()) == 4, r['families_used']
+    _run(['--method', 'transfer', '--subset', 'ln', '--anchor', 'l2', '--anchor_lambda', '1',
+          '--probe_list', t['probe'], '--probe_every', '1', '--exposure_match', 'none', '--target', 'Tiny', '--max_steps', '2', '--bank_patch', '64', '--bank_batch', '2'])
+    # v0.1: compose, step budget cycles the 3-image set, image subset, weight-mix evaluation
+    r = _run(['--method', 'transfer', '--families', 'compose', '--target', 'Tiny', '--max_steps', '7',
+              '--max_images', '2', '--bank_patch', '64', '--bank_batch', '2', '--eval_alphas', '0.5', '1.0'])
+    assert r['steps'] == 7 and r['n_images'] == 2, (r['steps'], r['n_images'])
+    ra = json.load(open(os.path.join(t['dir'], 'results', 'test', r['run_id'], 'alpha0.5', 'result.json')))
+    assert ra['eval_alpha'] == 0.5 and ra['n_images'] == 2 and ra['psnr'] != r['psnr'], ra
+    _run(['--method', 'transfer', '--exposure_match', 'clean', '--tag', 'v02', '--target', 'Tiny', '--max_steps', '2',
+          '--bank_patch', '64', '--bank_batch', '2'])
+    # another backbone through the same harness (run id carries the backbone; DCTTA uses its prefix rule)
+    ckpt_ad = t['ckpt_adair']
+    for meth in ('source', 'transfer', 'dctta'):
+        r_ad = _run(['--method', meth, '--backbone', 'adair', '--ckpt', ckpt_ad, '--source', 'tiny', '--target', 'Tiny',
+                     '--max_steps', '2', '--bank_patch', '64', '--bank_batch', '2', '--gen_train_steps', '1'])
+        assert r_ad['run_id'].startswith('adair-') and r_ad['backbone'] == 'adair' and r_ad['psnr'] > 0, r_ad['run_id']
+    # source flow: alpha 1 x1 is the source itself
+    r_f = _run(['--method', 'flow', '--target', 'Tiny'])
+    assert abs(r_f['psnr'] - r_src['psnr']) < 1e-3, (r_f['psnr'], r_src['psnr'])
+    _run(['--method', 'flow', '--ext_alpha', '1.5', '--n_apply', '2', '--target', 'Tiny'])
+    r_on = _run(['--method', 'transfer', '--regime', 'online', '--steps_per_image', '2', '--target', 'Tiny',
+                 '--bank_patch', '64', '--bank_batch', '2', '--probe_list', t['probe'], '--probe_every', '1'])
+    r_epi = _run(['--method', 'transfer', '--regime', 'episodic', '--steps_per_image', '2', '--target', 'Tiny',
+                  '--bank_patch', '64', '--bank_batch', '2', '--online_predict', 'before'])
+    assert r_on['n_images'] == 3 and r_epi['steps'] == 6
+    _run(['--method', 'dctta', '--subset', 'lora16', '--anchor', 'none', '--regime', 'episodic', '--steps_per_image',
+          '1', '--target', 'Tiny', '--gen_train_steps', '1'])
+    with mock.patch.object(sys, 'argv', ['agg', os.path.join(t['dir'], 'results', 'test')]):
+        agg.main()
+    assert os.path.exists(os.path.join(t['dir'], 'results', 'test', 'summary.csv'))
+
+
+def main():
+    tests = [(k, v) for k, v in globals().items() if k.startswith('test_') and callable(v)]
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print(f"PASS  {name}")
+        except Exception as e:  # noqa: BLE001
+            failed += 1
+            import traceback
+            traceback.print_exc()
+            print(f"FAIL  {name}: {e}")
+    print(f"\n{len(tests) - failed}/{len(tests)} passed" + (f"   (scratch dir: {_TMP.get('dir')})" if _TMP else ''))
+    return failed
+
+
+if __name__ == '__main__':
+    sys.exit(main())

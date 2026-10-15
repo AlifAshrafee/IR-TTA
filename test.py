@@ -1,6 +1,7 @@
-"""Evaluate the un-adapted source PromptIR on a target set (was ``test_promptir.py``).
+"""Evaluate an un-adapted source model on a target set (was ``test_promptir.py``).
 
     python test.py --lq_dir testdata/Rain100H/LQ --gt_dir testdata/Rain100H/GT --ckpt pretrain/model.ckpt
+    python test.py --backbone adair --ckpt pretrain/adair/adair3d.ckpt --lq_dir ... --gt_dir ...
 
 ``--self_ensemble`` reports the "*" rows of the paper (8-way geometric self-ensemble at inference,
 no adaptation).
@@ -13,8 +14,8 @@ from torch.utils.data import DataLoader
 
 from dctta.config import get_parser
 from dctta.data import PairedImageDataset
-from dctta.models.promptir import PromptIR
-from dctta.utils import SelfEnsemble, load_promptir_checkpoint, set_seed
+from dctta.models import build_model, parse_backbone_opts
+from dctta.utils import SelfEnsemble, set_seed
 from evaluate import evaluate
 
 
@@ -33,8 +34,7 @@ def main():
     set_seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = PromptIR(decoder=True)
-    load_promptir_checkpoint(model, args.ckpt, logger)
+    model = build_model(args.backbone, args.ckpt, logger, **parse_backbone_opts(args.backbone_opts))
     model = model.to(device)
 
     testset = PairedImageDataset(args.lq_dir, args.gt_dir, base=args.crop_base)
@@ -42,7 +42,7 @@ def main():
 
     net = SelfEnsemble(model) if args.self_ensemble else model
     psnr, ssim = evaluate(net, test_loader, device, None if args.no_save_images else args.results_dir, logger)
-    tag = "PromptIR*" if args.self_ensemble else "PromptIR"
+    tag = args.backbone + ("*" if args.self_ensemble else "")
     logger.info(f"{tag}  PSNR {psnr:.3f}  SSIM {ssim:.4f}  ({args.lq_dir}, {args.ckpt})")
     print(f"PSNR {psnr:.3f}  SSIM {ssim:.4f}")
 

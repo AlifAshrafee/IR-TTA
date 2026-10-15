@@ -78,10 +78,56 @@ def collect_params(model, leaf_names=('weight', 'bias')):
     return params, names
 
 
+def compute_tips_fisher(model, loader, fisher_ratio, device):
+    """TIPS (Eqs. 12-14): diagonal Fisher of the self-ensemble consistency loss over ``loader``.
+
+    Returns ``{name: [fisher, mask]}`` for every parameter that received a gradient; ``mask == 1``
+    marks the per-tensor top-``fisher_ratio`` entries (the ones TIPS restores to theta_0).
+    Shared by ``DCTTA.compute_fisher`` and the harness's TIPS anchor (``irtta/anchors.py``).
+    """
+    device = torch.device(device)
+    fishers, out = {}, {}
+    model.zero_grad(set_to_none=True)
+    for (_, img_lr, _) in tqdm(loader, total=len(loader), desc="TIPS Fisher"):
+        img_lr = img_lr.to(device)
+        model.zero_grad(set_to_none=True)
+
+        tran_imgs, tran_ops = augment_transform(img_lr)
+        tran_imgs.reverse()  # the identity transform comes last
+        tran_ops.reverse()
+
+        sr_imgs = []
+        for idx, (tran_img, op) in enumerate(zip(tran_imgs, tran_ops), start=1):
+            if idx < len(tran_imgs):
+                with torch.no_grad():
+                    sr_img = transform_tensor(model(tran_img), op, undo=True)
+            else:
+                sr_img = model(tran_img)  # identity, with grad
+            sr_imgs.append(sr_img)
+        sr_pseudo = torch.cat(sr_imgs, dim=0).mean(dim=0, keepdim=True).detach()
+        loss = charbonnier(sr_imgs[-1], sr_pseudo)
+        loss.backward()
+
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                fisher = param.grad.data.clone().detach() ** 2
+                fishers[name] = fishers[name] + fisher if name in fishers else fisher
+
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            fisher = fishers[name].flatten()
+            _, mask_idx = torch.topk(fisher, k=int(len(fisher) * fisher_ratio))
+            mask = param.new_zeros(param.shape).flatten()
+            mask[mask_idx] = 1
+            out[name] = [fisher, mask.view(param.shape)]
+    model.zero_grad(set_to_none=True)
+    return out
+
+
 class DCTTA:
     def __init__(self, model, optimizer, *, teacher_weight=5.0, ema_decay=0.45, fisher_ratio=0.6,
                  use_fisher=True, pixel_weight=1.0, perceptual_weight=0.01, lowpass_weight=0.1,
-                 device='cuda', restore_leaf_names=('weight', 'bias'), log_stats=False):
+                 device='cuda', restore_leaf_names=('weight', 'bias'), log_stats=False, penalty_fn=None):
         self.model = model
         self.optimizer = optimizer
         self.device = torch.device(device)
@@ -92,6 +138,8 @@ class DCTTA:
         self.restore_leaf_names = restore_leaf_names
         self.log_stats = log_stats
         self.last_stats = {}
+        # optional parameter-space anchor (harness: L2 / Fisher-weighted L2). None == released DCTTA.
+        self.penalty_fn = penalty_fn
 
         # RNG parity with the original: there, PerceptualLoss (VGG19) was built inside compute_loss2,
         # i.e. only *after* the RDDM generator had been initialised and the DataLoader iterators had
@@ -145,6 +193,11 @@ class DCTTA:
         loss_s = self.criterion(out_student, out_student_gt)
         loss_t = self.teacher_weight * self.criterion(out_student, y_bar) if self.teacher_weight > 0 else 0.
         loss = loss_s + loss_t
+        if self.penalty_fn is not None:
+            penalty = self.penalty_fn()
+            loss = loss + penalty
+            if self.log_stats:
+                self.last_stats['penalty'] = float(penalty)
         logger.info(f"loss_s: {float(loss_s):.5f}, loss_t: {float(loss_t):.5f}")
 
         self.optimizer.zero_grad()
@@ -197,41 +250,7 @@ class DCTTA:
         if len(self.fishers) > 0:
             return self.fishers
 
-        fishers = {}
-        self.model.zero_grad(set_to_none=True)
-        for (_, img_lr, _) in tqdm(loader, total=len(loader), desc="TIPS Fisher"):
-            img_lr = img_lr.to(self.device)
-            self.model.zero_grad(set_to_none=True)
-
-            tran_imgs, tran_ops = augment_transform(img_lr)
-            tran_imgs.reverse()  # the identity transform comes last
-            tran_ops.reverse()
-
-            sr_imgs = []
-            for idx, (tran_img, op) in enumerate(zip(tran_imgs, tran_ops), start=1):
-                if idx < len(tran_imgs):
-                    with torch.no_grad():
-                        sr_img = transform_tensor(self.model(tran_img), op, undo=True)
-                else:
-                    sr_img = self.model(tran_img)  # identity, with grad
-                sr_imgs.append(sr_img)
-            sr_pseudo = torch.cat(sr_imgs, dim=0).mean(dim=0, keepdim=True).detach()
-            loss = charbonnier(sr_imgs[-1], sr_pseudo)
-            loss.backward()
-
-            for name, param in self.model.named_parameters():
-                if param.grad is not None:
-                    fisher = param.grad.data.clone().detach() ** 2
-                    fishers[name] = fishers[name] + fisher if name in fishers else fisher
-
-        for name, param in self.model.named_parameters():
-            if param.grad is not None:
-                fisher = fishers[name].flatten()
-                _, mask_idx = torch.topk(fisher, k=int(len(fisher) * self.fisher_ratio))
-                mask = param.new_zeros(param.shape).flatten()
-                mask[mask_idx] = 1
-                self.fishers[name] = [fisher, mask.view(param.shape)]
-        self.model.zero_grad(set_to_none=True)
+        self.fishers = compute_tips_fisher(self.model, loader, self.fisher_ratio, self.device)
 
         for name, (fisher, mask) in self.fishers.items():
             logger.info(f"Fisher {name}: mean {fisher.mean().item():.3e}, frozen {int(mask.sum())}/{mask.numel()}")

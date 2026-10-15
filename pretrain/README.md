@@ -1,16 +1,16 @@
-Place the PromptIR source checkpoints here:
+Released source checkpoints (not tracked by git). `scripts/run.sh` expects this layout; edit the `CK` table at
+its top if your file names differ (a missing file skips that backbone/setting).
 
 ```
-pretrain/
-├── model.ckpt      # PromptIR, 3-task source (denoise sigma 15/25/50, Rain100L, RESIDE-OTS)
-└── epoch=80.ckpt   # PromptIR, 5-task source (+ GoPro deblur, LOL low-light)
+pretrain/model.ckpt, pretrain/epoch=80.ckpt                       PromptIR 3-task / 5-task
+pretrain/adair/adair3d.ckpt, adair5d.ckpt                          AdaIR       github.com/c-yn/AdaIR
+pretrain/bioir/BioIR3D.ckpt, BioIR5D.ckpt                          BioIR       github.com/c-yn/BioIR (All-in-one)
+pretrain/moceir/MoCE_IR_AIO3/last.ckpt, MoCE_IR_AIO5/last.ckpt      MoCE-IR     github.com/eduardzamfir/MoCE-IR
+pretrain/mirage/3Deg_small.ckpt, 5Deg_small.ckpt                   MIRAGE      github.com/Amazingren/MIRAGE
+pretrain/r2r/train_ckpt_3D_finetune/last.ckpt + save_prompts_3D/last/*.pt     R2R 3-task (+ degradation bank)
+pretrain/r2r/train_ckpt_5D_finetune/last.ckpt + save_prompts_5D/last/*.pt     R2R 5-task (+ degradation bank)
 ```
 
-Both are PyTorch-Lightning checkpoints whose `state_dict` keys carry a `net.` prefix;
-`dctta.utils.load_promptir_checkpoint` strips it.
-
-`wavelet.mat` is no longer needed: the only band it provided (2x2 Haar low-pass) is
-computed analytically in `dctta/losses.py::HaarLowPass`.
-
-There is no checkpoint for the RDDM degradation generator -- it is trained from scratch
-on the target set during adaptation.
+Lightning checkpoints (`net.`-prefixed keys) load as-is; the variant (3/5-task, tiny/small, MoCE-IR vs -S) is read
+off the checkpoint. Check them with `python tools/check_backbones.py <name>=<ckpt> ...`.
+The RDDM generator of DCTTA has no checkpoint: it is trained from scratch on the target set.

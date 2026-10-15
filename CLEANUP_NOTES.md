@@ -121,3 +121,16 @@ the prompt/encoder/decoder blocks — the layer set is fixed by the prefix rule 
 * `WaveletTransform` fell back to `./wavelet.mat` when the author's absolute path was absent.
 * `torchvision.models.vgg19(pretrained=True)` → `weights=VGG19_Weights.IMAGENET1K_V1` (same weights, non-deprecated API).
 * `load_state_dict(strict=False)` now reports missing/unexpected keys instead of hiding them.
+
+## 6. RNG parity
+
+* **RNG parity with the original required the VGG `fork_rng` fix.** VGG19 construction (`PerceptualLoss`)
+  consumes the global CPU RNG; the original built it lazily inside `compute_loss2`, i.e. after the RDDM
+  generator and the DataLoader had drawn their numbers. `DCTTA.__init__` therefore builds it inside
+  `torch.random.fork_rng`. Regression guard: `adapt.py` logs `CPU RNG checksum before generator init`,
+  which must read **319577** for `--seed 23 --dataset_seed 42` (it does not depend on the target set).
+  The harness (`run_tta.py`) logs the same line and keeps every addition (LoRA init, LPIPS, probes)
+  off the global RNG, so in the transductive regime the checksum is 319577 for every method/subset/anchor
+  with `--dataset_seed 42` (stream regimes and source-only runs build no patch dataset, so no re-seed).
+* `--clamp_pseudo` (clamping y_bar to [0, 1]) was tried on RealBlur-J and made the collapse worse
+  (16.10 → 3.45 dB, 300 steps); it is not in the main branch.

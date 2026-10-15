@@ -1,0 +1,196 @@
+"""Arguments of ``run_tta.py``. Method-dependent defaults (``None`` below) come from ``METHOD_DEFAULTS``."""
+import argparse
+import os
+from collections import OrderedDict
+
+from dctta.models import BACKBONES
+
+from .methods import METHOD_DEFAULTS
+from .data import DEFAULT_REGISTRY
+
+
+def get_parser():
+    p = argparse.ArgumentParser(description="IR-TTA harness: method x subset x anchor x regime")
+    g = p.add_argument_group('data')
+    g.add_argument('--target', type=str, default=None, help='dataset name in the registry (configs/datasets.json)')
+    g.add_argument('--lq_dir', type=str, default=None, help='... or explicit LQ/GT folders')
+    g.add_argument('--gt_dir', type=str, default=None)
+    g.add_argument('--registry', type=str, default=DEFAULT_REGISTRY)
+    g.add_argument('--crop_base', type=int, default=16)
+    g.add_argument('--num_workers', type=int, default=8)
+    g.add_argument('--max_images', type=int, default=0,
+                   help='smoke tests only: evaluate/stream an evenly spaced subset of this many images (0: all)')
+
+    g = p.add_argument_group('source model')
+    g.add_argument('--ckpt', type=str, required=True)
+    g.add_argument('--backbone', type=str, default='promptir', choices=list(BACKBONES),
+                   help='source all-in-one model (dctta/models/__init__.py); --ckpt is its released checkpoint')
+    g.add_argument('--backbone_opts', type=str, nargs='*', default=[],
+                   help='backbone key=value options, e.g. moceir: routing_noise=False; r2r: bank_dir=<dir>')
+    g.add_argument('--source', type=str, default=None,
+                   help="source setting tag; default from the checkpoint path (3task / 5task, e.g. model.ckpt, "
+                        "epoch=80.ckpt, adair3d, BioIR5D, MoCE_IR_AIO3, 5Deg_small, train_ckpt_3D_finetune)")
+
+    g = p.add_argument_group('method')
+    g.add_argument('--method', type=str, default='transfer', choices=sorted(METHOD_DEFAULTS))
+    g.add_argument('--subset', type=str, default=None,
+                   help="ln | lora<r> | full | all | re:<regex> | none, '+'-joined "
+                        "(default: lora16 for transfer, full for dctta)")
+    g.add_argument('--lora_alpha', type=float, default=None, help='LoRA alpha (default: = rank, scale 1)')
+    g.add_argument('--lora_scope', type=str, default=None, help='regex on module names to restrict LoRA injection')
+    g.add_argument('--lr', type=float, default=None, help='default: 1e-4 (transfer), 2e-4 (dctta)')
+    g.add_argument('--beta1', type=float, default=0.9)
+    g.add_argument('--beta2', type=float, default=0.999)
+    g.add_argument('--iterations', type=int, default=1, help='optimiser steps per patch')
+    g.add_argument('--pixel_weight', type=float, default=None)
+    g.add_argument('--perceptual_weight', type=float, default=None)
+    g.add_argument('--lowpass_weight', type=float, default=None)
+    g.add_argument('--ema_decay', type=float, default=None, help='dctta teacher EMA decay (0.45)')
+    # transfer
+    g.add_argument('--families', type=str, default='compose',
+                   help="synthetic degradations: compose (random physical-order chains) | all (one family per pair) | "
+                        "oracle (the target's task) | '+'-joined subset of blur, noise, rain, haze, lowlight")
+    g.add_argument('--bank', type=str, default=None,
+                   help="clean content: a folder or a key of the registry's _banks (default: _banks['default'])")
+    g.add_argument('--bank_max', type=int, default=300, help='clean images kept in RAM (evenly spaced)')
+    g.add_argument('--bank_patch', type=int, default=192, help='clean crop size')
+    g.add_argument('--bank_batch', type=int, default=4, help='synthetic pairs per optimiser step')
+    g.add_argument('--exposure_match', type=str, default='fit', choices=['fit', 'clean', 'none'],
+                   help='fit: the synthetic degraded image matches the target patch brightness, solved through the '
+                        'chain (v0.2) | clean: the clean scene is gained to the target before degrading (v0.1) | '
+                        'none (see irtta/degrade.py)')
+    g.add_argument('--eval_alphas', type=float, nargs='+', default=[1.0],
+                   help='transductive transfer: also evaluate theta_0 + a*(theta - theta_0) for each a '
+                        '(LoRA: delta scaled by a); each extra a writes <run>/alpha<a>/result.json')
+    # flow (evaluation only)
+    g.add_argument('--ext_alpha', type=float, default=1.0, help='flow: y <- y + ext_alpha * (f(y) - y)')
+    g.add_argument('--n_apply', type=int, default=1, help='flow: number of applications')
+    # dctta
+    g.add_argument('--teacher_weight', type=float, default=5.0, help='dctta: pseudo-label loss weight (alpha)')
+    g.add_argument('--gen_train_steps', type=int, default=5)
+    g.add_argument('--gen_sampling_steps', type=int, default=5)
+    g.add_argument('--gen_lr', type=float, default=2e-4)
+    g.add_argument('--gen_sum_scale', type=float, default=0.01)
+    g.add_argument('--gen_debug_dir', type=str, default=None)
+    g.add_argument('--save_fisher', type=str, default=None, help='dctta: save the TIPS {name: [fisher, mask]} dict')
+
+    g = p.add_argument_group('anchor')
+    g.add_argument('--anchor', type=str, default=None, choices=['none', 'l2', 'tips'],
+                   help='default: tips for dctta (released, dctta only), none otherwise')
+    g.add_argument('--anchor_lambda', type=float, default=0.0, help='weight of the l2 anchor')
+    g.add_argument('--tips_ratio', type=float, default=0.6, help='dctta: per-tensor fraction restored by TIPS')
+
+    g = p.add_argument_group('regime')
+    g.add_argument('--regime', type=str, default='transductive', choices=['transductive', 'online', 'episodic'])
+    g.add_argument('--patch_size', type=int, default=320)
+    g.add_argument('--batch_size', type=int, default=1, help='transductive patch batch size')
+    g.add_argument('--epochs', type=int, default=1, help='transductive passes over the target set')
+    g.add_argument('--max_steps', type=int, default=-1, help='transductive: stop after this many patches (-1: all)')
+    g.add_argument('--steps_per_image', type=int, default=1, help='online/episodic: steps per streamed image')
+    g.add_argument('--patches_per_step', type=int, default=1, help='online/episodic: random crops per step')
+    g.add_argument('--stream_order', type=str, default='sorted', choices=['sorted', 'shuffled'])
+    g.add_argument('--online_predict', type=str, default='after', choices=['after', 'before'])
+
+    g = p.add_argument_group('seeds')
+    g.add_argument('--seed', type=int, default=23)
+    g.add_argument('--dataset_seed', type=int, default=None,
+                   help='global re-seed inside the patch dataset (the original used 42); default: = --seed; -1 disables')
+
+    g = p.add_argument_group('diagnostics / outputs')
+    g.add_argument('--probe_list', type=str, default=None, help='probes/<target>.txt (name[,tag] per line)')
+    g.add_argument('--probe_every', type=int, default=50, help='steps (transductive) or images (online)')
+    g.add_argument('--log_stats', action='store_true', help='log per-step statistics (stats.jsonl + log)')
+    g.add_argument('--lpips', action='store_true', help='also compute LPIPS (pyiqa or lpips package)')
+    g.add_argument('--retention', action='store_true', help='evaluate the adapted model on the source sets')
+    g.add_argument('--retention_sets', type=str, nargs='+', default=None,
+                   help="registry names (default: the registry's _source_sets for --source)")
+    g.add_argument('--retention_max', type=int, default=100, help='images per retention set (evenly spaced; 0: all)')
+    g.add_argument('--save_images', action='store_true')
+    g.add_argument('--save_ckpt', action='store_true', help='save the adapted state_dict to the run dir')
+    g.add_argument('--out_root', type=str, default='results')
+    g.add_argument('--exp', type=str, default='harness', help='experiment folder under --out_root')
+    g.add_argument('--tag', type=str, default='', help='free-form suffix for the run id / aggregator group')
+    g.add_argument('--overwrite', action='store_true', help='re-run even if result.json exists')
+    g.add_argument('--gpu', type=str, default=None, help='CUDA_VISIBLE_DEVICES value (default: leave unchanged)')
+    return p
+
+
+def finalize(args):
+    d = METHOD_DEFAULTS[args.method]
+    for k in ('pixel_weight', 'perceptual_weight', 'lowpass_weight', 'ema_decay', 'anchor'):
+        if getattr(args, k, None) is None:
+            setattr(args, k, d.get(k, 0.0 if k != 'anchor' else 'none'))
+    if args.subset is None:
+        args.subset = {'dctta': 'full', 'transfer': 'lora16'}.get(args.method, 'none')
+    if args.lr is None:
+        args.lr = {'dctta': 2e-4, 'transfer': 1e-4}.get(args.method, 5e-5)
+    if args.dataset_seed is None:
+        args.dataset_seed = args.seed
+    if args.method in ('source', 'identity', 'flow'):
+        args.subset, args.anchor = 'none', 'none'
+    if (args.target is None) == (args.lq_dir is None):
+        raise SystemExit("give exactly one of --target or --lq_dir/--gt_dir")
+    if args.lq_dir is not None and args.gt_dir is None:
+        raise SystemExit("--lq_dir needs --gt_dir")
+    return args
+
+
+def get_args(argv=None):
+    return finalize(get_parser().parse_args(argv))
+
+
+# Arguments that change the numbers but are not already in the readable run id
+# (method, subset, anchor+lambda, regime, target, source, lr, seeds, tag are).
+SEMANTIC_ARGS = OrderedDict([
+    ('families', 'fam'), ('bank', 'bk'), ('bank_max', 'bm'), ('bank_patch', 'bp'), ('bank_batch', 'bb'),
+    ('exposure_match', 'em'), ('ext_alpha', 'ea'), ('n_apply', 'na'), ('ema_decay', 'ema'),
+    ('iterations', 'it'), ('pixel_weight', 'pix'), ('perceptual_weight', 'vgg'), ('lowpass_weight', 'lp'),
+    ('teacher_weight', 'tw'), ('beta1', 'b1'), ('beta2', 'b2'),
+    ('lora_alpha', 'la'), ('lora_scope', 'lsc'), ('tips_ratio', 'tr'),
+    ('gen_train_steps', 'gts'), ('gen_sampling_steps', 'gss'), ('gen_lr', 'glr'), ('gen_sum_scale', 'gsc'),
+    ('patch_size', 'ps'), ('batch_size', 'bs'), ('epochs', 'ep'), ('max_steps', 'ms'),
+    ('steps_per_image', 'spi'), ('patches_per_step', 'pps'), ('stream_order', 'so'), ('online_predict', 'op'),
+    ('max_images', 'mi'), ('crop_base', 'cb'), ('backbone_opts', 'bo'),
+])
+_TRANSFER_ARGS = ('families', 'bank', 'bank_max', 'bank_patch', 'bank_batch', 'exposure_match')
+_FLOW_ARGS = ('ext_alpha', 'n_apply')
+_DCTTA_ARGS = ('teacher_weight', 'gen_train_steps', 'gen_sampling_steps', 'gen_lr', 'gen_sum_scale')
+_IRRELEVANT = {
+    'source': ('ema_decay', 'iterations', 'pixel_weight', 'perceptual_weight', 'lowpass_weight', 'beta1', 'beta2',
+               'lora_alpha', 'lora_scope', 'tips_ratio', 'patch_size', 'batch_size', 'epochs', 'max_steps',
+               'steps_per_image', 'patches_per_step', 'online_predict')
+              + _TRANSFER_ARGS + _DCTTA_ARGS,
+    'transfer': _DCTTA_ARGS + _FLOW_ARGS + ('ema_decay',),
+    'dctta': _TRANSFER_ARGS + _FLOW_ARGS,
+}
+_IRRELEVANT['identity'] = _IRRELEVANT['source'] + _FLOW_ARGS
+_IRRELEVANT['flow'] = _IRRELEVANT['source']
+_IRRELEVANT['source'] = _IRRELEVANT['source'] + _FLOW_ARGS
+
+
+def config_suffix(args):
+    """Compact ``key=value`` string of every semantic argument that differs from its default for this
+    method (e.g. ``t=ema_rdc=0.1_spi=5``); empty for a default configuration. Used in the run id and as
+    a grouping key by the aggregator, so different configurations can never share a run folder."""
+    ref = finalize(get_parser().parse_args(['--ckpt', args.ckpt, '--method', args.method, '--target', '_']))
+    skip = set(_IRRELEVANT.get(args.method, ()))
+    if args.regime == 'transductive':
+        skip |= {'steps_per_image', 'patches_per_step', 'stream_order', 'online_predict'}
+    else:
+        skip |= {'epochs', 'max_steps', 'batch_size'}
+    if args.anchor != 'tips':
+        skip.add('tips_ratio')
+    if 'lora' not in args.subset:
+        skip |= {'lora_alpha', 'lora_scope'}
+    parts = []
+    for k, code in SEMANTIC_ARGS.items():
+        if k in skip:
+            continue
+        v, d = getattr(args, k), getattr(ref, k)
+        if v != d:
+            if k == 'bank':
+                v = os.path.basename(os.path.normpath(v))
+            elif k == 'backbone_opts':
+                v = '+'.join(v)
+            parts.append(f"{code}={v:g}" if isinstance(v, float) else f"{code}={v}")
+    return '_'.join(parts)

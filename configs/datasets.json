@@ -1,0 +1,160 @@
+{
+  "_comment": "'{root}' expands to _root; relative paths are relative to the repo. Sets without 'lq' but with 'noise_sigma' are synthesised (irtta/data.py). 'split' = test (reported) | val (hyperparameter selection only) | source (in-distribution source-task sets: retention). Run tools/check_registry.py after any edit.",
+  "_root": "../AiO-Datasets",
+  "_banks": {
+    "default": "{root}/Train/deblur/DIV2K/DIV2K_train_HR",
+    "_note": "clean content for transfer TTA (DIV2K train HR, 800 images), searched recursively."
+  },
+  "_source_sets": {
+    "3task": [
+      "BSD68_s15",
+      "BSD68_s25",
+      "BSD68_s50",
+      "Rain100L",
+      "SOTS_Outdoor"
+    ],
+    "5task": [
+      "BSD68_s25",
+      "Rain100L",
+      "SOTS_Outdoor",
+      "GoPro",
+      "LOL"
+    ]
+  },
+  "Rain100H": {
+    "lq": "{root}/Test/derain/Rain100H/LQ",
+    "gt": "{root}/Test/derain/Rain100H/GT",
+    "split": "test",
+    "task": "derain"
+  },
+  "HIDE": {
+    "lq": "{root}/Test/deblur/HIDE/LQ",
+    "gt": "{root}/Test/deblur/HIDE/GT",
+    "split": "test",
+    "task": "deblur"
+  },
+  "LOLv2": {
+    "lq": "{root}/Test/enhance/LOL_v2_Real/LQ",
+    "gt": "{root}/Test/enhance/LOL_v2_Real/GT",
+    "split": "test",
+    "task": "enhance"
+  },
+  "Kodak24_Poisson": {
+    "lq": "{root}/Test/denoise/Kodak24_Poisson/LQ",
+    "gt": "{root}/Test/denoise/Kodak24_Poisson/GT",
+    "split": "test",
+    "task": "denoise",
+    "note": "Poisson peak 30, seed 0; input PSNR ~18.99 dB"
+  },
+  "OHAZY": {
+    "lq": "{root}/Test/dehaze/O-HAZY/LQ",
+    "gt": "{root}/Test/dehaze/O-HAZY/GT",
+    "split": "val",
+    "task": "dehaze",
+    "max_side": 800,
+    "note": "dehaze validation set AND a test set (DCTTA reports it; no official train split exists), flagged in tables; DenseHaze and SOTS_Indoor are the clean haze tests. LQ and GT downsampled at load time (bicubic) to a 800-px long side, as Dense-Haze"
+  },
+  "DenseHaze": {
+    "lq": "{root}/Test/dehaze/DenseHaze/LQ",
+    "gt": "{root}/Test/dehaze/DenseHaze/GT",
+    "split": "test",
+    "task": "dehaze"
+  },
+  "SOTS_Indoor": {
+    "lq": "{root}/Test/dehaze/SOTS_Indoor/LQ",
+    "gt": "{root}/Test/dehaze/SOTS_Indoor/GT",
+    "split": "test",
+    "task": "dehaze"
+  },
+  "LOLv2_Syn": {
+    "lq": "{root}/Test/enhance/LOL_v2_Synthetic/LQ",
+    "gt": "{root}/Test/enhance/LOL_v2_Synthetic/GT",
+    "split": "test",
+    "task": "enhance"
+  },
+  "HIDE_val": {
+    "lq": "{root}/Train/deblur/HIDE/LQ",
+    "gt": "{root}/Train/deblur/HIDE/GT",
+    "split": "val",
+    "task": "deblur",
+    "note": "HIDE train (6397); runs use --max_images 300 (evenly spaced)"
+  },
+  "LOLv2_val": {
+    "lq": "{root}/Train/enhance/LOL_v2_Real/LQ",
+    "gt": "{root}/Train/enhance/LOL_v2_Real/GT",
+    "split": "val",
+    "task": "enhance"
+  },
+  "Rain100H_val": {
+    "lq": "{root}/Train/derain/RainTrainH/LQ",
+    "gt": "{root}/Train/derain/RainTrainH/GT",
+    "split": "val",
+    "task": "derain"
+  },
+  "BSD68_s15": {
+    "gt": "{root}/Test/denoise/BSD68",
+    "noise_sigma": 15,
+    "noise_seed": 0,
+    "split": "source",
+    "task": "denoise"
+  },
+  "BSD68_s25": {
+    "gt": "{root}/Test/denoise/BSD68",
+    "noise_sigma": 25,
+    "noise_seed": 0,
+    "split": "source",
+    "task": "denoise"
+  },
+  "BSD68_s50": {
+    "gt": "{root}/Test/denoise/BSD68",
+    "noise_sigma": 50,
+    "noise_seed": 0,
+    "split": "source",
+    "task": "denoise"
+  },
+  "Rain100L": {
+    "lq": "{root}/Test/derain/Rain100L/LQ",
+    "gt": "{root}/Test/derain/Rain100L/GT",
+    "split": "source",
+    "task": "derain"
+  },
+  "SOTS_Outdoor": {
+    "lq": "{root}/Test/dehaze/SOTS_Outdoor/LQ",
+    "gt": "{root}/Test/dehaze/SOTS_Outdoor/GT",
+    "split": "source",
+    "task": "dehaze"
+  },
+  "GoPro": {
+    "lq": "{root}/Test/deblur/GoPro/LQ",
+    "gt": "{root}/Test/deblur/GoPro/GT",
+    "split": "source",
+    "task": "deblur"
+  },
+  "LOL": {
+    "lq": "{root}/Test/enhance/LOL_v1/LQ",
+    "gt": "{root}/Test/enhance/LOL_v1/GT",
+    "split": "source",
+    "task": "enhance"
+  },
+  "RealBlurJ": {
+    "lq": "{root}/Test/deblur/RealBlur_J/LQ",
+    "gt": "{root}/Test/deblur/RealBlur_J/GT",
+    "split": "test",
+    "task": "deblur",
+    "note": "not in the suites: dark real blur is a separate problem (exposure identifiability), see the build-order doc"
+  },
+  "RealBlurR": {
+    "lq": "{root}/Test/deblur/RealBlur_R/LQ",
+    "gt": "{root}/Test/deblur/RealBlur_R/GT",
+    "split": "test",
+    "task": "deblur",
+    "note": "not in the suites (see RealBlurJ)"
+  },
+  "RealBlurJ_val": {
+    "lq": "{root}/Train/deblur/RealBlur_J/LQ",
+    "gt": "{root}/Train/deblur/RealBlur_J/GT",
+    "split": "val",
+    "task": "deblur",
+    "note": "not in the suites (see RealBlurJ)"
+  }
+}
