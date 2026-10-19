@@ -14,6 +14,8 @@ What is checked:
   * every backbone builds and gets LN / LoRA subsets; zero-init LoRA keeps each backbone's output
   * self-ensemble member stacking does not change the fused pseudo-label
   * PARITY: run_tta.py --method dctta reproduces adapt.py exactly (same PSNR, same RNG checksum)
+  * NSS features (gain invariance, separation, gradients); ABC selection; v0 'gain' matching; every new transfer
+    loss term at once (ABC, target / re-degradation consistency, NSS prior, L2 anchor)
   * Q1/Q2a probe (tools/scale_probe.py): exact band split, padded forward, oracle bounds, same PSNR as the harness
   * end-to-end runs of identity / source / flow / transfer / dctta, all regimes, probe, aggregator, other backbones
 """
@@ -107,7 +109,7 @@ def test_degradations():
     g = torch.Generator().manual_seed(0)
     c = torch.rand(3, 3, 64, 64, generator=g)
     for fams in [[f] for f in D.FAMILIES] + [['compose']]:
-        y, cc, used = D.degrade_batch(c, fams, g)
+        y, cc, used, _ = D.degrade_batch(c, fams, g)
         assert y.shape == c.shape and cc.shape == c.shape and len(used) == 3, fams
         assert float(y.min()) >= 0 and float(y.max()) <= 1 and torch.isfinite(y).all(), fams
         assert not torch.allclose(y, cc), f"{fams} left the image unchanged"
@@ -152,6 +154,34 @@ def test_degradations():
     assert 'none' not in labels and len(labels) > 10 and any(l.count('+') >= 2 for l in labels), labels
     assert D.parse_families('oracle', 'deblur') == ['blur'] and len(D.parse_families('all')) == 5
     assert D.parse_families('rain+haze') == ['rain', 'haze'] and D.parse_families('compose') == ['compose']
+    # gain (v0): one gain on both images, degraded matched to the target
+    tm = torch.tensor([0.40, 0.35, 0.30]).view(1, 3, 1, 1)
+    y, cc = D.apply_chain(c1, rain, g, tm, 'gain')
+    assert torch.allclose(y.mean(dim=(2, 3), keepdim=True), tm, atol=2e-3) and cc.mean() < y.mean()
+    # ABC: with a selector the lowest-scoring candidate is kept
+    picks = D.degrade_batch(c[:2], ['compose'], g, None, 'fit', select=lambda t: -t.mean(dim=(1, 2, 3)), k=6)
+    assert len(picks[3]) == 2 and picks[0].shape == c[:2].shape
+
+
+def test_nss():
+    from irtta import nss as N
+    g = torch.Generator().manual_seed(4)
+    x = torch.rand(4, 3, 96, 96, generator=g) * 0.6 + 0.2
+    f = N.nss_features(x)
+    assert f.shape == (4, N.N_FEATURES) and torch.isfinite(f).all()
+    # MSCN statistics ignore a global gain (only the log-contrast features move)
+    f2 = N.nss_features((x * 0.7).clamp(0, 1))
+    keep = [i for i in range(N.N_FEATURES) if i not in (14, 29)]
+    assert torch.allclose(f[:, keep], f2[:, keep], atol=2e-2), (f[:, keep] - f2[:, keep]).abs().max()
+    # blur and noise move the features; the Gaussian distance separates them from the clean fit
+    clean = torch.cat([D.conv_same(x[i:i + 1], D.gaussian_kernel(9, 1.2, 1.2, 0.)) for i in range(4)])
+    xs = torch.cat([clean, D.conv_same(clean, D.gaussian_kernel(9, 0.6, 0.6, 0.))], 0)
+    model = N.GaussianModel(N.nss_features(xs.repeat(4, 1, 1, 1) + 0.002 * torch.randn(32, 3, 96, 96, generator=g)))
+    noisy = (clean + 0.1 * torch.randn(clean.shape, generator=g)).clamp(0, 1)
+    assert float(model.distance(N.nss_features(noisy)).mean()) > float(model.distance(N.nss_features(clean)).mean())
+    xg = x.clone().requires_grad_(True)
+    model.distance(N.nss_features(xg)).mean().backward()
+    assert torch.isfinite(xg.grad).all() and float(xg.grad.abs().sum()) > 0
 
 
 def test_self_ensemble_members():
@@ -264,6 +294,15 @@ def test_end_to_end():
     assert ra['eval_alpha'] == 0.5 and ra['n_images'] == 2 and ra['psnr'] != r['psnr'], ra
     _run(['--method', 'transfer', '--exposure_match', 'clean', '--tag', 'v02', '--target', 'Tiny', '--max_steps', '2',
           '--bank_patch', '64', '--bank_batch', '2'])
+    # every extra term at once (ABC selection, target and re-degradation consistency, NSS prior, L2 anchor)
+    r_all = _run(['--method', 'transfer', '--families', 'all', '--exposure_match', 'gain', '--abc_k', '3',
+                  '--abc_fit_n', '8', '--cons_weight', '0.5', '--cons_band', 'high', '--redeg_weight', '0.5',
+                  '--nss_weight', '0.02', '--anchor', 'l2', '--anchor_lambda', '0.01', '--target', 'Tiny',
+                  '--max_steps', '3', '--bank_patch', '64', '--bank_batch', '2', '--log_stats',
+                  '--eval_alphas', '0.5', '1.0'])
+    assert r_all['steps'] == 3 and 'abc=3' in r_all['run_id'] and r_all['psnr'] > 0, r_all['run_id']
+    stats = [json.loads(l) for l in open(os.path.join(t['dir'], 'results', 'test', r_all['run_id'], 'stats.jsonl'))]
+    assert all(k in stats[-1] for k in ('abc_d', 'cons', 'redeg', 'nss')), stats[-1].keys()
     # another backbone through the same harness (run id carries the backbone; DCTTA uses its prefix rule)
     ckpt_ad = t['ckpt_adair']
     for meth in ('source', 'transfer', 'dctta'):

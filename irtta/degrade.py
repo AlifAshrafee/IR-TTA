@@ -28,6 +28,10 @@ and the clean image is whatever scene produced it:
     and the clean image keeps its natural exposure (v0 gained the clean image too and over-exposed it).
 * ``clean`` (v0.1): the clean scene is gained to the target means *before* degradation (rain then makes the
   degraded image brighter than the target); exposure-changing chains as in ``fit``.
+* ``gain`` (v0): every chain runs with its prior parameters, then ONE per-channel gain a = target / mean(y) is
+  applied to both the degraded and the clean image. This is the matching that gave v0's +2.5 dB on the 5-task rain
+  validation set; for chains that change exposure (low-light, haze) it also over-exposes the clean target, the
+  reason v0 failed on LOLv2. Kept as the reproduction control for that result.
 * ``none``: no matching.
 
 All random numbers come from a dedicated CPU ``torch.Generator`` (the global RNG is never touched).
@@ -219,7 +223,11 @@ def apply_chain(c, chain, g, target_mean=None, mode='fit'):
     """Degrade one clean image (1,3,H,W) with ``chain`` in physical order.
 
     ``target_mean`` (1,3,1,1): the target patch's channel means, or None for no exposure matching.
-    ``mode``: 'fit' or 'clean' (module docstring). Returns (degraded, clean target)."""
+    ``mode``: 'fit', 'clean' or 'gain' (module docstring). Returns (degraded, clean target)."""
+    if mode == 'gain' and target_mean is not None:
+        y = _run_chain(c, chain, g, None)
+        a = (target_mean / _chan_mean(y)).clamp(0.1, 10.0)
+        return (a * y).clamp(0, 1), (a * c).clamp(0, 1)
     changes_exposure = chain['exposure'] or chain['scene'] == 'haze'
     if target_mean is None or changes_exposure:
         return _run_chain(c, chain, g, target_mean), c
@@ -267,17 +275,37 @@ def parse_families(spec, task=None):
     return fams
 
 
-def degrade_batch(c, families, g, target_mean=None, mode='fit'):
+def draw_chain(families, g):
+    """One chain from ``parse_families`` output: a random multi-primitive chain for ['compose'], else a uniformly
+    drawn single-family chain."""
+    if families == ['compose']:
+        return random_chain(g)
+    return FAMILY_CHAINS[families[int(torch.randint(len(families), (1,), generator=g))]]
+
+
+def degrade_batch(c, families, g, target_mean=None, mode='fit', select=None, k=1):
     """Degrade each image of ``c`` (B,3,H,W). ``families``: list from ``parse_families``; ``mode``: exposure
-    matching ('fit' / 'clean', used when ``target_mean`` is given). Returns (degraded, clean targets, labels)."""
-    ys, cs, used = [], [], []
+    matching ('fit' / 'clean' / 'gain', used when ``target_mean`` is given).
+
+    ``select`` + ``k`` > 1: draw ``k`` candidate degradations per image and keep the one with the lowest
+    ``select(degraded candidates (k,3,H,W)) -> (k,)`` score (ABC selection, irtta/nss.py).
+    Returns (degraded, clean targets, labels, chosen scores or None)."""
+    ys, cs, used, scores = [], [], [], []
     for i in range(c.shape[0]):
-        if families == ['compose']:
-            chain = random_chain(g)
+        if select is None or k <= 1:
+            chain = draw_chain(families, g)
+            y, ci = apply_chain(c[i:i + 1], chain, g, target_mean, mode)
         else:
-            chain = FAMILY_CHAINS[families[int(torch.randint(len(families), (1,), generator=g))]]
-        y, ci = apply_chain(c[i:i + 1], chain, g, target_mean, mode)
+            cand = []
+            for _ in range(k):
+                ch = draw_chain(families, g)
+                yk, ck = apply_chain(c[i:i + 1], ch, g, target_mean, mode)
+                cand.append((ch, yk, ck))
+            sc = select(torch.cat([t[1] for t in cand], 0))
+            j = int(torch.argmin(sc))
+            chain, y, ci = cand[j]
+            scores.append(float(sc[j]))
         ys.append(y)
         cs.append(ci)
         used.append(chain_label(chain))
-    return torch.cat(ys, 0), torch.cat(cs, 0), used
+    return torch.cat(ys, 0), torch.cat(cs, 0), used, (scores or None)

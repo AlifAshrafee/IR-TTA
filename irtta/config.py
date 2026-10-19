@@ -55,10 +55,22 @@ def get_parser():
     g.add_argument('--bank_max', type=int, default=300, help='clean images kept in RAM (evenly spaced)')
     g.add_argument('--bank_patch', type=int, default=192, help='clean crop size')
     g.add_argument('--bank_batch', type=int, default=4, help='synthetic pairs per optimiser step')
-    g.add_argument('--exposure_match', type=str, default='fit', choices=['fit', 'clean', 'none'],
+    g.add_argument('--exposure_match', type=str, default='fit', choices=['fit', 'clean', 'gain', 'none'],
                    help='fit: the synthetic degraded image matches the target patch brightness, solved through the '
                         'chain (v0.2) | clean: the clean scene is gained to the target before degrading (v0.1) | '
-                        'none (see irtta/degrade.py)')
+                        'none | gain: v0, one gain on both images (see irtta/degrade.py)')
+    g.add_argument('--abc_k', type=int, default=1,
+                   help='ABC pair selection: draw k candidate degradations per clean crop, keep the one whose NSS '
+                        'features are closest to the target set (Mahalanobis); 1 = off (irtta/nss.py)')
+    g.add_argument('--abc_fit_n', type=int, default=256, help='crops used to fit the target / clean NSS Gaussians')
+    g.add_argument('--cons_weight', type=float, default=0.0,
+                   help='target consistency L1(B f(x), B f_0(x)) on the target patch, f_0 = frozen source')
+    g.add_argument('--cons_band', type=str, default='all', choices=['all', 'high'],
+                   help='B for --cons_weight: all frequencies, or only the high-pass (x - Gaussian(2px))')
+    g.add_argument('--redeg_weight', type=float, default=0.0,
+                   help='re-degradation consistency L1(f(D(x)), f_0(x)), D a random chain at the target exposure')
+    g.add_argument('--nss_weight', type=float, default=0.0,
+                   help='output prior: Mahalanobis^2/D of NSS(f(x)) to the clean bank NSS Gaussian')
     g.add_argument('--eval_alphas', type=float, nargs='+', default=[1.0],
                    help='transductive transfer: also evaluate theta_0 + a*(theta - theta_0) for each a '
                         '(LoRA: delta scaled by a); each extra a writes <run>/alpha<a>/result.json')
@@ -143,7 +155,8 @@ def get_args(argv=None):
 # (method, subset, anchor+lambda, regime, target, source, lr, seeds, tag are).
 SEMANTIC_ARGS = OrderedDict([
     ('families', 'fam'), ('bank', 'bk'), ('bank_max', 'bm'), ('bank_patch', 'bp'), ('bank_batch', 'bb'),
-    ('exposure_match', 'em'), ('ext_alpha', 'ea'), ('n_apply', 'na'), ('ema_decay', 'ema'),
+    ('exposure_match', 'em'), ('abc_k', 'abc'), ('abc_fit_n', 'abn'), ('cons_weight', 'cw'), ('cons_band', 'cbd'),
+    ('redeg_weight', 'rw'), ('nss_weight', 'nw'), ('ext_alpha', 'ea'), ('n_apply', 'na'), ('ema_decay', 'ema'),
     ('iterations', 'it'), ('pixel_weight', 'pix'), ('perceptual_weight', 'vgg'), ('lowpass_weight', 'lp'),
     ('teacher_weight', 'tw'), ('beta1', 'b1'), ('beta2', 'b2'),
     ('lora_alpha', 'la'), ('lora_scope', 'lsc'), ('tips_ratio', 'tr'),
@@ -152,7 +165,8 @@ SEMANTIC_ARGS = OrderedDict([
     ('steps_per_image', 'spi'), ('patches_per_step', 'pps'), ('stream_order', 'so'), ('online_predict', 'op'),
     ('max_images', 'mi'), ('crop_base', 'cb'), ('backbone_opts', 'bo'),
 ])
-_TRANSFER_ARGS = ('families', 'bank', 'bank_max', 'bank_patch', 'bank_batch', 'exposure_match')
+_TRANSFER_ARGS = ('families', 'bank', 'bank_max', 'bank_patch', 'bank_batch', 'exposure_match', 'abc_k', 'abc_fit_n',
+                  'cons_weight', 'cons_band', 'redeg_weight', 'nss_weight')
 _FLOW_ARGS = ('ext_alpha', 'n_apply')
 _DCTTA_ARGS = ('teacher_weight', 'gen_train_steps', 'gen_sampling_steps', 'gen_lr', 'gen_sum_scale')
 _IRRELEVANT = {

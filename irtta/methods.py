@@ -3,8 +3,8 @@
 * ``identity`` -- the unprocessed input (the "do no harm" bar).
 * ``source`` -- the un-adapted source model (B0).
 * ``transfer`` -- transfer TTA: supervised L1 on synthetic pairs ``(op(c), c)`` from a clean content bank,
-  ``op`` a chain of physical primitives (``irtta/degrade.py``), brightness matched to a target patch
-  (parked: no gain over the source so far; kept as a building block).
+  ``op`` a chain of physical primitives (``irtta/degrade.py``), brightness matched to a target patch; optional
+  ABC pair selection, target consistency, re-degradation consistency and an NSS output prior (class docstring).
 * ``flow`` -- evaluation only: the source's own restoration direction, extrapolated / iterated
   (``y <- y + ext_alpha * (f(y) - y)``, ``n_apply`` times): does following the source further help?
 * ``dctta`` -- the released DCTTA (``dctta/tta.py``) driven through the harness (baseline B4).
@@ -13,6 +13,7 @@ import logging
 from copy import deepcopy
 
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 
 from dctta.losses import DCTTALoss
@@ -20,7 +21,8 @@ from dctta.rddm.generator import ResidualDegradationGenerator
 from dctta.tta import DCTTA
 
 from .data import CleanBank
-from .degrade import degrade_batch, parse_families
+from .degrade import apply_chain, chain_label, degrade_batch, draw_chain, parse_families
+from .nss import GaussianModel, downscale_crops, nss_features, random_crop_batch
 
 logger = logging.getLogger(__name__)
 
@@ -147,8 +149,23 @@ class _OptimMethod(Method):
 
 
 class TransferMethod(_OptimMethod):
-    """Transfer TTA v0.1: L1(f(op(c)), c') on clean bank crops c, op a physical-order chain whose brightness is
-    matched to the current target patch x (``--exposure_match fit|clean``)."""
+    """Transfer TTA: supervised pairs from clean content + optional target-side and distribution-level terms.
+
+    Loss per step (target patch x, clean bank crops c, frozen source f_0, adapted f):
+
+        L =   L1( f(op(c)), c' )                                   pairs (always); op from the prior, or
+                                                                   ABC-selected to look like the target (--abc_k)
+            + cons_weight  * L1( B f(x), B sg[f_0(x)] )             target consistency; B = identity or a
+                                                                   high-pass (--cons_band high)
+            + redeg_weight * L1( f(D(x)), sg[f_0(x')] )            re-degradation consistency (SRTTA-style): the
+                                                                   target with an extra degradation D restores to
+                                                                   the source's output of the target
+            + nss_weight   * d_C( NSS(f(x)) )                      output prior: Mahalanobis^2/D of the restored
+                                                                   target's NSS to the clean bank's Gaussian
+            + anchor                                               --anchor l2: 0.5 lam ||theta - theta_0||^2
+
+    ``sg`` = stop-gradient. Every extra term is off by default, which is transfer v0.1/v0.2.
+    """
     name = 'transfer'
 
     def __init__(self, model, subset, anchor, args, device):
@@ -161,40 +178,127 @@ class TransferMethod(_OptimMethod):
         logger.info(f"transfer: families {self.families}, bank {args.bank_path} ({len(self.bank)} images), "
                     f"{args.bank_batch} x {args.bank_patch}px pairs per step, exposure match '{args.exposure_match}'")
         self.gen = torch.Generator().manual_seed(int(args.seed) + 3)
+        self.gen_t = torch.Generator().manual_seed(int(args.seed) + 5)   # target-side draws (crops, D)
         self.fam_counts = {}
+        self.need_teacher = args.cons_weight > 0 or args.redeg_weight > 0
+        self.teacher = None
+        if self.need_teacher:   # frozen theta_0 (LoRA zero-init: the source function)
+            self.teacher = deepcopy(model).eval()
+            for p in self.teacher.parameters():
+                p.requires_grad_(False)
+        self.target_model = None   # N(mu_T, Sigma_T) of target NSS (ABC)
+        self.clean_model = None    # N(mu_C, Sigma_C) of clean NSS (output prior)
         self._snapshot()
+
+    # ---- distribution models (prepare) ----
+    @torch.no_grad()
+    def prepare(self, loader=None):
+        super().prepare(loader)
+        a = self.args
+        if a.abc_k > 1:
+            if loader is None:
+                raise ValueError("--abc_k needs the transductive target loader")
+            feats, n = [], 0
+            with torch.random.fork_rng(devices=[]):   # iterating a DataLoader draws from the global RNG
+                for _, x, _ in loader:
+                    crops = random_crop_batch(x, a.bank_patch, 2, self.gen_t).to(self.device)
+                    feats.append(nss_features(crops))
+                    n += crops.shape[0]
+                    if n >= a.abc_fit_n:
+                        break
+            self.target_model = GaussianModel(torch.cat(feats, 0)).to(self.device)
+            logger.info(f"ABC: target NSS Gaussian from {n} crops of {a.bank_patch}px")
+        if a.nss_weight > 0:
+            feats = []
+            for i in range(0, a.abc_fit_n, 16):
+                c = self.bank.sample(16, a.bank_patch * 2, self.gen_t)
+                feats.append(nss_features(c[:8, :, :a.bank_patch, :a.bank_patch].to(self.device)))
+                feats.append(nss_features(downscale_crops(c[8:], 2).to(self.device)))
+            self.clean_model = GaussianModel(torch.cat(feats, 0)).to(self.device)
+            if self.target_model is not None:
+                logger.info(f"NSS: KL(target || clean) = {self.clean_model.kl_from(self.target_model):.2f}")
+
+    def _select(self, cand):
+        return self.target_model.distance(nss_features(cand))
+
+    def _band(self, t):
+        if self.args.cons_band == 'high':
+            return t - _gauss_blur(t, 2.0)
+        return t
 
     def step(self, x, name=None):
         a = self.args
         self.model.train()
         loss_val = None
         for _ in range(a.iterations):
+            st = {}
             with torch.no_grad():
                 c = self.bank.sample(a.bank_batch, a.bank_patch, self.gen).to(self.device)
                 tmean = x.mean(dim=(0, 2, 3), keepdim=True) if a.exposure_match != 'none' else None
-                y, c, fams = degrade_batch(c, self.families, self.gen, tmean, a.exposure_match)
+                select = self._select if self.target_model is not None else None
+                y, c, fams, scores = degrade_batch(c, self.families, self.gen, tmean, a.exposure_match,
+                                                   select=select, k=a.abc_k)
+                if scores:
+                    st['abc_d'] = sum(scores) / len(scores)
+                f0x = self.teacher(x) if self.need_teacher else None
+                if a.redeg_weight > 0:
+                    chain = draw_chain(self.families, self.gen_t)
+                    dx, xk = apply_chain(x, chain, self.gen_t, tmean, 'fit')
+                    f0xk = f0x if torch.equal(xk, x) else self.teacher(xk)
+                    st['redeg_fam'] = chain_label(chain)
             for f in fams:
                 self.fam_counts[f] = self.fam_counts.get(f, 0) + 1
+            # one backward per term (gradients add up; only one graph is alive at a time)
             self.optimizer.zero_grad(set_to_none=True)
             out = self.model(y)
             sup = self.criterion(out, c)
-            loss = sup
+            sup.backward()
+            loss = float(sup)
+            out = out.detach()
+            if a.cons_weight > 0 or a.nss_weight > 0:
+                fx = self.model(x)
+                tgt = 0.
+                if a.cons_weight > 0:
+                    cons = (self._band(fx) - self._band(f0x)).abs().mean()
+                    tgt = tgt + a.cons_weight * cons
+                    st['cons'] = float(cons)
+                if a.nss_weight > 0:
+                    nss = self.clean_model.distance(nss_features(fx.clamp(0, 1))).mean()
+                    tgt = tgt + a.nss_weight * nss
+                    st['nss'] = float(nss)
+                tgt.backward()
+                loss += float(tgt)
+                del fx
+            if a.redeg_weight > 0:
+                redeg = (self.model(dx) - f0xk).abs().mean()
+                (a.redeg_weight * redeg).backward()
+                loss += a.redeg_weight * float(redeg)
+                st['redeg'] = float(redeg)
             pen = self.anchor.penalty()
-            if pen is not None:
-                loss = loss + pen
-            loss.backward()
+            if torch.is_tensor(pen):
+                pen.backward()
+                loss += float(pen)
             self.optimizer.step()
             self.anchor.post_step()
             self.steps += 1
-            loss_val = float(loss)
+            loss_val = loss
             self.last_stats = {'sup': float(sup),
                                'penalty': float(pen) if pen is not None else 0.0,
                                'x_in': float(x.mean()), 'pair_in': float(y.mean()), 'pair_gt': float(c.mean()),
-                               'f_pair': float(out.detach().mean()), 'fams': '+'.join(fams)}
+                               'f_pair': float(out.mean()), 'fams': '+'.join(fams), **st}
         return loss_val
 
     def reset(self):
         self._restore()
+
+
+def _gauss_blur(t, sigma):
+    r = max(1, int(3 * sigma + 0.5))
+    k = torch.exp(-torch.arange(-r, r + 1, dtype=t.dtype, device=t.device) ** 2 / (2 * sigma ** 2))
+    k = k / k.sum()
+    C = t.shape[1]
+    t = F.conv2d(F.pad(t, (r, r, 0, 0), mode='reflect'), k.view(1, 1, 1, -1).repeat(C, 1, 1, 1), groups=C)
+    return F.conv2d(F.pad(t, (0, 0, r, r), mode='reflect'), k.view(1, 1, -1, 1).repeat(C, 1, 1, 1), groups=C)
 
 
 class DCTTAMethod(_OptimMethod):

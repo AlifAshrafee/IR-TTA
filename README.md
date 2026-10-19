@@ -21,6 +21,7 @@ irtta/
   regimes.py                  transductive / online / episodic loops with cost timing
   evaluation.py               per-image PSNR/SSIM/(LPIPS)/brightness drift; probe
   degrade.py                  physical degradation primitives (rain/haze -> blur -> exposure -> noise)
+  nss.py                      differentiable natural-scene statistics + Gaussian models (ABC selection, output prior)
   data.py, config.py          dataset registry (configs/datasets.json), clean content bank; arguments
 adapt.py, test.py, evaluate.py   DCTTA and the un-adapted source, standalone (as released)
 dctta/
@@ -56,6 +57,7 @@ GPU=0 bash scripts/run.sh base agg          # input, source, source applied twic
 GPU=1 bash scripts/run.sh dctta agg         # DCTTA on PromptIR
 GPU=0 bash scripts/run.sh probe             # Q1 + Q2a -> results/probe/probe_<setting>.md
 GPU=0 bash scripts/run.sh ref agg           # HIDE source rows for all six 5-task backbones
+GPU=0 bash scripts/run.sh tta_a             # loss study stage A (then tta_b; EXP=tta ... agg for the table)
 # single runs
 python run_tta.py --method source --target HIDE --backbone r2r --ckpt pretrain/r2r/train_ckpt_5D_finetune/last.ckpt
 python run_tta.py --method dctta --target Rain100H --ckpt pretrain/model.ckpt --seed 23 --dataset_seed 42
@@ -71,6 +73,7 @@ Results: `results/<exp>/<run_id>/{run.log, config.json, result.json, per_image.c
 | `--method` | `identity`, `source`, `flow` (`--ext_alpha`, `--n_apply`), `transfer`, `dctta` |
 | `--subset` | `ln`, `lora<r>`, `full`, `all`, `re:<regex>`; `+`-joined |
 | `--anchor` | `none`, `l2` (`--anchor_lambda`); `tips` only with `--method dctta` |
+| transfer losses | `--exposure_match fit/clean/gain/none`, `--abc_k K` (ABC pair selection toward the target's NSS), `--cons_weight`/`--cons_band all/high` (target consistency to the frozen source), `--redeg_weight` (re-degradation consistency), `--nss_weight` (NSS output prior); see `irtta/methods.py`, `irtta/nss.py` |
 | `--regime` | `transductive` (`--max_steps`, `--epochs`), `online` / `episodic` (`--steps_per_image`, `--online_predict`) |
 | data | `--target <registry name>` or `--lq_dir/--gt_dir`; `--max_images N` adapts and evaluates on the same evenly spaced N images |
 | seeds | `--seed S`, `--dataset_seed` (default = seed; the DCTTA reference used 23/42) |

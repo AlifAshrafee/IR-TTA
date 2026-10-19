@@ -6,6 +6,8 @@
 #   GPU=1 bash scripts/run.sh dctta agg                      # DCTTA, PromptIR (only sets not run before)
 #   GPU=0 bash scripts/run.sh probe                          # Q1 spectral-gain oracle + Q2a scale-teacher test
 #   GPU=0 bash scripts/run.sh ref agg                        # HIDE source rows for all six 5-task backbones
+#   GPU=0 TSETS="Rain100H_val HIDE_val" bash scripts/run.sh tta_a     # loss study, stage A (split sets over GPUs)
+#   GPU=0 EXP=tta bash scripts/run.sh agg                    # -> results/tta/table_5task_promptir.md
 #
 # Stages
 #   test   CPU self-tests
@@ -14,6 +16,9 @@
 #   probe  Q1 + Q2a (tools/scale_probe.py, no training), backbones in $BBS, test + validation sets;
 #          report: results/probe/probe_<setting>.md
 #   ref    source only, HIDE, all six 5-task backbones (the co-author's reference table has no HIDE column)
+#   tta_a  loss study A, PromptIR 5-task validation sets ($TSETS): which pair signal (v0.2 'all', v0 'gain' on rain,
+#          ABC-selected pairs) moves the model; + source/input rows in results/tta
+#   tta_b  loss study B: the regularisers on top of $BASE (default: ABC-selected pairs), one at a time, then all
 #   agg    results/$EXP/summary.csv + tables (table_<setting>_<backbone>.md, table_backbones.md)
 #   guard  DCTTA regression guard (adapt.py vs harness, Rain100H 3-task) -- only after touching dctta/
 set -euo pipefail
@@ -96,6 +101,44 @@ stage_ref() {
     M=$(model_args $B 5task) || continue
     run --method source $M --target HIDE
   done
+}
+
+# ---- loss study (results/tta, PromptIR 5-task, validation sets only; mixes 0.5 and 1 evaluated for free) ----
+TSETS=${TSETS:-"Rain100H_val HIDE_val LOLv2_val OHAZY"}
+BASE=${BASE:-"--families all --abc_k 8"}
+tta() {   # tta <tag> <flags...>: one transfer run per set in $TSETS
+  local tag=$1; shift
+  local M T
+  M=$(model_args promptir 5task) || return 0
+  for T in $TSETS; do
+    CUDA_VISIBLE_DEVICES=$GPU python run_tta.py --num_workers $NW --exp tta --seed $SEED $M --target $T $(size_args $T) \
+      --method transfer --max_steps 500 --eval_alphas 0.5 1.0 --log_stats --tag $tag "$@"
+  done
+}
+
+stage_tta_a() {
+  local M T
+  M=$(model_args promptir 5task) || return 0
+  for T in $TSETS; do
+    CUDA_VISIBLE_DEVICES=$GPU python run_tta.py --num_workers $NW --exp tta --seed $SEED $M --target $T $(size_args $T) --method source
+    CUDA_VISIBLE_DEVICES=$GPU python run_tta.py --num_workers $NW --exp tta --seed $SEED $M --target $T $(size_args $T) --method identity
+  done
+  tta A0 --families all                                   # v0.2 pairs, nothing else (reference)
+  tta A3 --families all --abc_k 8                         # + ABC selection toward the target's NSS
+  if [[ " $TSETS " == *" Rain100H_val "* ]]; then          # where did v0's +2.5 dB on rain go?
+    local TSETS=Rain100H_val
+    tta A1 --families rain --exposure_match gain          # v0 matching, rain pairs only
+    tta A2 --families rain                                # v0.2 matching, rain pairs only
+  fi
+}
+
+stage_tta_b() {
+  tta B1 $BASE --cons_weight 0.5                          # target consistency, all bands
+  tta B2 $BASE --cons_weight 1 --cons_band high           # target consistency, high band only
+  tta B3 $BASE --anchor l2 --anchor_lambda 0.001          # L2-SP on the adapter (check 'penalty' vs 'sup' in run.log)
+  tta B4 $BASE --nss_weight 0.02                          # NSS output prior toward clean images
+  tta B5 $BASE --redeg_weight 0.5                         # re-degradation consistency (SRTTA-style)
+  tta B6 $BASE --cons_weight 1 --cons_band high --anchor l2 --anchor_lambda 0.001 --nss_weight 0.02 --redeg_weight 0.5
 }
 
 stage_agg() {
