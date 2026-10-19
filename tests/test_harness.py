@@ -169,10 +169,11 @@ def test_nss():
     x = torch.rand(4, 3, 96, 96, generator=g) * 0.6 + 0.2
     f = N.nss_features(x)
     assert f.shape == (4, N.N_FEATURES) and torch.isfinite(f).all()
-    # MSCN statistics ignore a global gain (only the log-contrast features move)
+    # MSCN statistics nearly ignore a global gain (only the log-contrast features move). Not exactly: the
+    # stabilising constant C = 1/255 in (I - mu) / (sigma + C) does not scale, so a few % change is expected
     f2 = N.nss_features((x * 0.7).clamp(0, 1))
     keep = [i for i in range(N.N_FEATURES) if i not in (14, 29)]
-    assert torch.allclose(f[:, keep], f2[:, keep], atol=2e-2), (f[:, keep] - f2[:, keep]).abs().max()
+    assert torch.allclose(f[:, keep], f2[:, keep], rtol=0.1, atol=1e-2), (f[:, keep] - f2[:, keep]).abs().max()
     # blur and noise move the features; the Gaussian distance separates them from the clean fit
     clean = torch.cat([D.conv_same(x[i:i + 1], D.gaussian_kernel(9, 1.2, 1.2, 0.)) for i in range(4)])
     xs = torch.cat([clean, D.conv_same(clean, D.gaussian_kernel(9, 0.6, 0.6, 0.))], 0)
