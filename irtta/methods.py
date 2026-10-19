@@ -186,6 +186,12 @@ class TransferMethod(_OptimMethod):
             self.teacher = deepcopy(model).eval()
             for p in self.teacher.parameters():
                 p.requires_grad_(False)
+        self.floor = None
+        if args.clean_floor > 0:   # natural-exposure floor: a low quantile of clean-bank crop brightness
+            g = torch.Generator().manual_seed(int(args.seed) + 7)
+            means = self.bank.sample(256, args.bank_patch, g).mean(dim=(1, 2, 3))
+            self.floor = float(torch.quantile(means, args.clean_floor))
+            logger.info(f"natural-exposure floor: {self.floor:.3f} (q={args.clean_floor} of clean-bank crop means)")
         self.target_model = None   # N(mu_T, Sigma_T) of target NSS (ABC)
         self.clean_model = None    # N(mu_C, Sigma_C) of clean NSS (output prior)
         self._snapshot()
@@ -237,7 +243,7 @@ class TransferMethod(_OptimMethod):
                 tmean = x.mean(dim=(0, 2, 3), keepdim=True) if a.exposure_match != 'none' else None
                 select = self._select if self.target_model is not None else None
                 y, c, fams, scores = degrade_batch(c, self.families, self.gen, tmean, a.exposure_match,
-                                                   select=select, k=a.abc_k)
+                                                   select=select, k=a.abc_k, floor=self.floor)
                 if scores:
                     st['abc_d'] = sum(scores) / len(scores)
                 f0x = self.teacher(x) if self.need_teacher else None

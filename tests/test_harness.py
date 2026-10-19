@@ -167,6 +167,12 @@ def test_degradations():
     dark = torch.tensor([0.10, 0.08, 0.06]).view(1, 3, 1, 1)
     y, cc = D.apply_chain(c1, D.FAMILY_CHAINS['lowlight'], g, dark, 'camera')
     assert torch.equal(cc, c1), "camera: an under-exposure chain must keep the clean image's exposure"
+    # natural-exposure floor: on a dark target the clean image of a rain pair is lifted to the floor
+    st = g.get_state()
+    y0, c0 = D.apply_chain(c1, rain, g, dark, 'camera')
+    g.set_state(st)
+    yf, cf = D.apply_chain(c1, rain, g, dark, 'camera', floor=0.3)
+    assert torch.equal(y0, yf) and float(c0.mean()) < 0.3 and abs(float(cf.mean()) - 0.3) < 0.02, float(cf.mean())
     # ABC: with a selector the lowest-scoring candidate is kept
     picks = D.degrade_batch(c[:2], ['compose'], g, None, 'fit', select=lambda t: -t.mean(dim=(1, 2, 3)), k=6)
     assert len(picks[3]) == 2 and picks[0].shape == c[:2].shape
@@ -305,7 +311,8 @@ def test_end_to_end():
     _run(['--method', 'transfer', '--exposure_match', 'clean', '--tag', 'v02', '--target', 'Tiny', '--max_steps', '2',
           '--bank_patch', '64', '--bank_batch', '2'])
     # every extra term at once (ABC selection, target and re-degradation consistency, NSS prior, L2 anchor)
-    r_all = _run(['--method', 'transfer', '--families', 'all', '--exposure_match', 'gain', '--abc_k', '3',
+    r_all = _run(['--method', 'transfer', '--families', 'all', '--exposure_match', 'camera', '--clean_floor', '0.05',
+                  '--abc_k', '3',
                   '--abc_fit_n', '8', '--cons_weight', '0.5', '--cons_band', 'high', '--redeg_weight', '0.5',
                   '--nss_weight', '0.02', '--anchor', 'l2', '--anchor_lambda', '0.01', '--target', 'Tiny',
                   '--max_steps', '3', '--bank_patch', '64', '--bank_batch', '2', '--log_stats',

@@ -19,6 +19,7 @@
 #   tta_a  loss study A, PromptIR 5-task validation sets ($TSETS): which pair signal (v0.2 'all', v0 'gain' on rain,
 #          ABC-selected pairs) moves the model; + source/input rows in results/tta
 #   tta_a2 A4/A5: 'camera' matching (v0's gain for rain/haze/blur/noise, fit for under-exposure), +/- ABC
+#   tta_a3 A6: A4 + natural-exposure floor for clean images (--clean_floor 0.05)
 #   tta_b  loss study B: the regularisers on top of $BASE (default: ABC-selected pairs), one at a time, then all
 #   agg    results/$EXP/summary.csv + tables (table_<setting>_<backbone>.md, table_backbones.md)
 #   guard  DCTTA regression guard (adapt.py vs harness, Rain100H 3-task) -- only after touching dctta/
@@ -106,7 +107,7 @@ stage_ref() {
 
 # ---- loss study (results/tta, PromptIR 5-task, validation sets only; mixes 0.5 and 1 evaluated for free) ----
 TSETS=${TSETS:-"Rain100H_val HIDE_val LOLv2_val OHAZY"}
-BASE=${BASE:-"--families all --abc_k 8 --exposure_match camera"}
+BASE=${BASE:-"--families all --abc_k 8 --exposure_match camera --clean_floor 0.05"}
 tta() {   # tta <tag> <flags...>: one transfer run per set in $TSETS
   local tag=$1; shift
   local M T
@@ -136,6 +137,10 @@ stage_tta_a() {
 stage_tta_a2() {   # the physical matching rule, with and without ABC
   tta A4 --families all --abc_k 8 --exposure_match camera
   tta A5 --families all --exposure_match camera
+}
+
+stage_tta_a3() {   # A4 + the natural-exposure floor (LOLv2 fix)
+  tta A6 --families all --abc_k 8 --exposure_match camera --clean_floor 0.05
 }
 
 stage_tta_b() {
