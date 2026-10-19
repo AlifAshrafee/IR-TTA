@@ -37,11 +37,11 @@ and the clean image is whatever scene produced it:
   one gain: ``gain`` behaviour. Under-exposure *is* a change of camera gain, so a chain with the exposure primitive
   solves that gain and keeps the clean image at its natural exposure: ``fit`` behaviour. (``fit`` instead brightens
   or darkens the scene *before* the rain/haze light is added, which no camera does.)
-* ``--clean_floor q`` (with gain/camera): the main study's references are well-exposed photographs. If the shared
-  gain would make the clean image darker than the q-quantile of clean-bank brightness, the target's darkness cannot
-  come from the scene under a normal exposure; it is under-exposure, so the clean image keeps (at least) that
-  natural brightness. Without it, camera matching turns every blur/noise/rain/haze pair on a dark target into a
-  'keep it dark' pair, which is what broke LOLv2 (v0, and camera matching without the floor).
+* ``--dark_q q`` (with gain/camera): the main study's references are well-exposed photographs. A target patch
+  darker than the q-quantile of clean-bank *image* brightness is darker than almost any well-exposed photo, so its
+  darkness is under-exposure, not the scene: the degraded image still matches the patch, the clean image keeps its
+  natural exposure. Without it, camera matching turns every blur/noise/rain/haze pair on a dark target into a
+  'keep it dark' pair, which is what broke LOLv2 (v0, and camera matching). Bright targets are unaffected.
 * ``none``: no matching.
 
 All random numbers come from a dedicated CPU ``torch.Generator`` (the global RNG is never touched).
@@ -233,19 +233,17 @@ def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None):
     """Degrade one clean image (1,3,H,W) with ``chain`` in physical order.
 
     ``target_mean`` (1,3,1,1): the target patch's channel means, or None for no exposure matching.
-    ``mode``: 'fit', 'clean', 'gain' or 'camera' (module docstring). ``floor`` (gain/camera): if the shared gain
-    would make the clean image darker than ``floor`` (mean), the clean image gets a larger gain that reaches it, i.e.
-    the target's darkness is attributed to under-exposure and the pair becomes 'degradation + under-exposure'. Returns (degraded, clean target)."""
+    ``mode``: 'fit', 'clean', 'gain' or 'camera' (module docstring). ``floor`` (gain/camera): a target patch darker
+    than ``floor`` (mean) is under-exposed: the degraded image still matches it, but the clean image keeps its
+    natural exposure, so the pair becomes 'degradation + under-exposure'. Returns (degraded, clean target)."""
     if mode == 'camera':
         mode = 'fit' if chain['exposure'] else 'gain'
     if mode == 'gain' and target_mean is not None:
         y = _run_chain(c, chain, g, None)
         a = (target_mean / _chan_mean(y)).clamp(0.1, 10.0)
         ac = a
-        if floor is not None:   # natural-exposure floor: the clean capture is never darker than ``floor``
-            m = float((a * c).mean())
-            if m < floor:
-                ac = a * (floor / max(m, 1e-4))
+        if floor is not None and float(target_mean.mean()) < floor:
+            ac = torch.ones_like(a)   # under-exposed target: the clean capture keeps its natural exposure
         return (a * y).clamp(0, 1), (ac * c).clamp(0, 1)
     changes_exposure = chain['exposure'] or chain['scene'] == 'haze'
     if target_mean is None or changes_exposure:

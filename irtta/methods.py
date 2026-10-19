@@ -187,11 +187,11 @@ class TransferMethod(_OptimMethod):
             for p in self.teacher.parameters():
                 p.requires_grad_(False)
         self.floor = None
-        if args.clean_floor > 0:   # natural-exposure floor: a low quantile of clean-bank crop brightness
-            g = torch.Generator().manual_seed(int(args.seed) + 7)
-            means = self.bank.sample(256, args.bank_patch, g).mean(dim=(1, 2, 3))
-            self.floor = float(torch.quantile(means, args.clean_floor))
-            logger.info(f"natural-exposure floor: {self.floor:.3f} (q={args.clean_floor} of clean-bank crop means)")
+        if args.dark_q > 0:   # under-exposure threshold: a low quantile of clean-bank image brightness
+            means = torch.tensor([float(img.mean()) / 255. for img in self.bank.images])
+            self.floor = float(torch.quantile(means, args.dark_q))
+            logger.info(f"under-exposure threshold: target patches darker than {self.floor:.3f} "
+                        f"(q={args.dark_q} of {len(means)} clean-bank image means) keep natural-exposure clean images")
         self.target_model = None   # N(mu_T, Sigma_T) of target NSS (ABC)
         self.clean_model = None    # N(mu_C, Sigma_C) of clean NSS (output prior)
         self._snapshot()

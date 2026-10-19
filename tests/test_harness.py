@@ -167,12 +167,16 @@ def test_degradations():
     dark = torch.tensor([0.10, 0.08, 0.06]).view(1, 3, 1, 1)
     y, cc = D.apply_chain(c1, D.FAMILY_CHAINS['lowlight'], g, dark, 'camera')
     assert torch.equal(cc, c1), "camera: an under-exposure chain must keep the clean image's exposure"
-    # natural-exposure floor: on a dark target the clean image of a rain pair is lifted to the floor
+    # under-exposure threshold: on a dark target the clean image of a rain pair keeps its natural exposure
     st = g.get_state()
     y0, c0 = D.apply_chain(c1, rain, g, dark, 'camera')
     g.set_state(st)
-    yf, cf = D.apply_chain(c1, rain, g, dark, 'camera', floor=0.3)
-    assert torch.equal(y0, yf) and float(c0.mean()) < 0.3 and abs(float(cf.mean()) - 0.3) < 0.02, float(cf.mean())
+    yf, cf = D.apply_chain(c1, rain, g, dark, 'camera', floor=0.2)
+    assert torch.equal(y0, yf) and float(c0.mean()) < 0.2 and torch.equal(cf, c1)
+    g.set_state(st)
+    yb, cb = D.apply_chain(c1, rain, g, tm, 'camera', floor=0.2)      # a bright target is unaffected
+    g.set_state(st)
+    assert torch.equal(cb, D.apply_chain(c1, rain, g, tm, 'camera')[1])
     # ABC: with a selector the lowest-scoring candidate is kept
     picks = D.degrade_batch(c[:2], ['compose'], g, None, 'fit', select=lambda t: -t.mean(dim=(1, 2, 3)), k=6)
     assert len(picks[3]) == 2 and picks[0].shape == c[:2].shape
@@ -311,7 +315,7 @@ def test_end_to_end():
     _run(['--method', 'transfer', '--exposure_match', 'clean', '--tag', 'v02', '--target', 'Tiny', '--max_steps', '2',
           '--bank_patch', '64', '--bank_batch', '2'])
     # every extra term at once (ABC selection, target and re-degradation consistency, NSS prior, L2 anchor)
-    r_all = _run(['--method', 'transfer', '--families', 'all', '--exposure_match', 'camera', '--clean_floor', '0.05',
+    r_all = _run(['--method', 'transfer', '--families', 'all', '--exposure_match', 'camera', '--dark_q', '0.05',
                   '--abc_k', '3',
                   '--abc_fit_n', '8', '--cons_weight', '0.5', '--cons_band', 'high', '--redeg_weight', '0.5',
                   '--nss_weight', '0.02', '--anchor', 'l2', '--anchor_lambda', '0.01', '--target', 'Tiny',
