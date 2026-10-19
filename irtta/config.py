@@ -55,10 +55,11 @@ def get_parser():
     g.add_argument('--bank_max', type=int, default=300, help='clean images kept in RAM (evenly spaced)')
     g.add_argument('--bank_patch', type=int, default=192, help='clean crop size')
     g.add_argument('--bank_batch', type=int, default=4, help='synthetic pairs per optimiser step')
-    g.add_argument('--exposure_match', type=str, default='fit', choices=['fit', 'clean', 'gain', 'none'],
+    g.add_argument('--exposure_match', type=str, default='fit', choices=['fit', 'clean', 'gain', 'camera', 'none'],
                    help='fit: the synthetic degraded image matches the target patch brightness, solved through the '
                         'chain (v0.2) | clean: the clean scene is gained to the target before degrading (v0.1) | '
-                        'none | gain: v0, one gain on both images (see irtta/degrade.py)')
+                        'none | gain: v0, one gain on both images | camera: gain, except under-exposure chains '
+                        'use fit (see irtta/degrade.py)')
     g.add_argument('--abc_k', type=int, default=1,
                    help='ABC pair selection: draw k candidate degradations per clean crop, keep the one whose NSS '
                         'features are closest to the target set (Mahalanobis); 1 = off (irtta/nss.py)')

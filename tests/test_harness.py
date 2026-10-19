@@ -158,6 +158,15 @@ def test_degradations():
     tm = torch.tensor([0.40, 0.35, 0.30]).view(1, 3, 1, 1)
     y, cc = D.apply_chain(c1, rain, g, tm, 'gain')
     assert torch.allclose(y.mean(dim=(2, 3), keepdim=True), tm, atol=2e-3) and cc.mean() < y.mean()
+    # camera: gain for rain (same random draws -> identical pair), fit for an under-exposure chain
+    st = g.get_state()
+    yg, cg = D.apply_chain(c1, rain, g, tm, 'gain')
+    g.set_state(st)
+    yc, ccam = D.apply_chain(c1, rain, g, tm, 'camera')
+    assert torch.equal(yg, yc) and torch.equal(cg, ccam)
+    dark = torch.tensor([0.10, 0.08, 0.06]).view(1, 3, 1, 1)
+    y, cc = D.apply_chain(c1, D.FAMILY_CHAINS['lowlight'], g, dark, 'camera')
+    assert torch.equal(cc, c1), "camera: an under-exposure chain must keep the clean image's exposure"
     # ABC: with a selector the lowest-scoring candidate is kept
     picks = D.degrade_batch(c[:2], ['compose'], g, None, 'fit', select=lambda t: -t.mean(dim=(1, 2, 3)), k=6)
     assert len(picks[3]) == 2 and picks[0].shape == c[:2].shape

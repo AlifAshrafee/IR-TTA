@@ -32,6 +32,11 @@ and the clean image is whatever scene produced it:
   applied to both the degraded and the clean image. This is the matching that gave v0's +2.5 dB on the 5-task rain
   validation set; for chains that change exposure (low-light, haze) it also over-exposes the clean target, the
   reason v0 failed on LOLv2. Kept as the reproduction control for that result.
+* ``camera``: the physical rule. A camera's exposure gain multiplies everything that reaches the sensor, so for a
+  scene degradation (rain, haze) or blur/noise the observed image and the clean reference of the same capture share
+  one gain: ``gain`` behaviour. Under-exposure *is* a change of camera gain, so a chain with the exposure primitive
+  solves that gain and keeps the clean image at its natural exposure: ``fit`` behaviour. (``fit`` instead brightens
+  or darkens the scene *before* the rain/haze light is added, which no camera does.)
 * ``none``: no matching.
 
 All random numbers come from a dedicated CPU ``torch.Generator`` (the global RNG is never touched).
@@ -223,7 +228,9 @@ def apply_chain(c, chain, g, target_mean=None, mode='fit'):
     """Degrade one clean image (1,3,H,W) with ``chain`` in physical order.
 
     ``target_mean`` (1,3,1,1): the target patch's channel means, or None for no exposure matching.
-    ``mode``: 'fit', 'clean' or 'gain' (module docstring). Returns (degraded, clean target)."""
+    ``mode``: 'fit', 'clean', 'gain' or 'camera' (module docstring). Returns (degraded, clean target)."""
+    if mode == 'camera':
+        mode = 'fit' if chain['exposure'] else 'gain'
     if mode == 'gain' and target_mean is not None:
         y = _run_chain(c, chain, g, None)
         a = (target_mean / _chan_mean(y)).clamp(0.1, 10.0)
