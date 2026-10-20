@@ -142,7 +142,8 @@ def summary_table(summary, args):
                     key = 'src'
                 elif r['method'] == 'flow' and num(r['ext_alpha']) == 1 and int(float(r['n_apply'])) == 2:
                     key = 'x2'
-                elif (r['method'] == 'transfer' and (r.get('tag') or '') == args.tag and r['families'] == args.families
+                elif (r['method'] == 'transfer' and (r.get('tag') or '') == args.tag
+                      and (not args.families or r['families'] == args.families)
                       and (r.get('exposure_match') or 'fit') == args.exposure_match):
                     key = f"ours{num(r.get('eval_alpha')) or 1.0:g}"
                 if key:
@@ -164,9 +165,9 @@ def summary_table(summary, args):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('root', help='folder holding summary.csv (tools/aggregate.py output)')
-    p.add_argument('--tag', default='v02', help="summary table: our runs' --tag ('' = the untagged v0.1 runs)")
-    p.add_argument('--families', default='compose', help="summary table: our runs' --families")
-    p.add_argument('--exposure_match', default='fit', help="summary table: our runs' --exposure_match")
+    p.add_argument('--tag', default='A8', help="summary table: our runs' --tag ('' = the untagged v0.1 runs)")
+    p.add_argument('--families', default='', help="summary table: our runs' --families ('' = any)")
+    p.add_argument('--exposure_match', default='camera', help="summary table: our runs' --exposure_match")
     args = p.parse_args()
     with open(os.path.join(args.root, 'summary.csv')) as f:
         summary = list(csv.DictReader(f))

@@ -16,6 +16,7 @@
 #   probe  Q1 + Q2a (tools/scale_probe.py, no training), backbones in $BBS, test + validation sets;
 #          report: results/probe/probe_<setting>.md
 #   ref    source only, HIDE, all six 5-task backbones (the co-author's reference table has no HIDE column)
+#   ours   A8 on the suite for $BBS x $SETTINGS (ONLYTEST=1 skips the *_val sets)
 #   tta_a  loss study A, PromptIR 5-task validation sets ($TSETS): which pair signal (v0.2 'all', v0 'gain' on rain,
 #          ABC-selected pairs) moves the model; + source/input rows in results/tta
 #   tta_a2 A4/A5: 'camera' matching (v0's gain for rain/haze/blur/noise, fit for under-exposure), +/- ABC
@@ -161,6 +162,24 @@ stage_tta_b() {
   tta B4 $BASE --nss_weight 0.02                          # NSS output prior toward clean images
   tta B5 $BASE --redeg_weight 0.5                         # re-degradation consistency (SRTTA-style)
   tta B6 $BASE --cons_weight 1 --cons_band high --anchor l2 --anchor_lambda 0.001 --nss_weight 0.02 --redeg_weight 0.5
+}
+
+# ---- our method on the suite (results/suite, next to input / source / source x2 / DCTTA / co-author rows) ----
+# A8 = transfer + ABC selection (colour NSS) + camera matching + under-exposure rule + source-anchored dark exposure.
+# Operators are restricted to the source's own families (3-task: noise, rain, haze; 5-task: all five).
+# Pre-declared main number: mix 0.5 (chosen on the validation sets); mix 1 is reported alongside.
+ONLYTEST=${ONLYTEST:-0}
+stage_ours() {
+  local B S M T FAM
+  for B in $BBS; do for S in $SETTINGS; do
+    M=$(model_args $B $S) || continue
+    [[ $S == 3task ]] && FAM="noise+rain+haze" || FAM="all"
+    for T in ${TARGETS[$S]}; do
+      [[ $ONLYTEST == 1 && $T == *_val ]] && continue
+      run --method transfer $M --target $T $(size_args $T) --max_steps 500 --eval_alphas 0.5 1.0 --tag A8 \
+          --families $FAM --abc_k 8 --exposure_match camera --dark_q 0.05 --nss_color --dark_anchor
+    done
+  done; done
 }
 
 stage_agg() {
