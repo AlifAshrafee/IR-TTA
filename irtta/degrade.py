@@ -42,6 +42,10 @@ and the clean image is whatever scene produced it:
   darkness is under-exposure, not the scene: the degraded image still matches the patch, the clean image keeps its
   natural exposure. Without it, camera matching turns every blur/noise/rain/haze pair on a dark target into a
   'keep it dark' pair, which is what broke LOLv2 (v0, and camera matching). Bright targets are unaffected.
+* ``--dark_anchor`` (with ``--dark_q``): how bright the clean version of an under-exposed image should be cannot be
+  read off the dark image (illumination and reflectance are confounded), so it is taken from the frozen source's
+  output on that target patch instead of the clean bank's arbitrary exposure. The pairs then teach what they can
+  identify (noise, blur, ...) and leave the brightening level where the source puts it.
 * ``none``: no matching.
 
 All random numbers come from a dedicated CPU ``torch.Generator`` (the global RNG is never touched).
@@ -229,13 +233,19 @@ def _chan_mean(t):
     return t.mean(dim=(2, 3), keepdim=True).clamp_min(1e-4)
 
 
-def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None):
+def _to_mean(c, m):
+    return (c * (m / _chan_mean(c))).clamp(0, 1)
+
+
+def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None, clean_mean=None):
     """Degrade one clean image (1,3,H,W) with ``chain`` in physical order.
 
     ``target_mean`` (1,3,1,1): the target patch's channel means, or None for no exposure matching.
     ``mode``: 'fit', 'clean', 'gain' or 'camera' (module docstring). ``floor`` (gain/camera): a target patch darker
     than ``floor`` (mean) is under-exposed: the degraded image still matches it, but the clean image keeps its
-    natural exposure, so the pair becomes 'degradation + under-exposure'. Returns (degraded, clean target)."""
+    natural exposure, so the pair becomes 'degradation + under-exposure'. ``clean_mean`` (1,3,1,1), only for such
+    under-exposed targets: the clean image is brought to these channel means instead of its natural exposure (the
+    exposure the frozen source gives that target patch, --dark_anchor). Returns (degraded, clean target)."""
     if mode == 'camera':
         mode = 'fit' if chain['exposure'] else 'gain'
     if mode == 'gain' and target_mean is not None:
@@ -244,10 +254,13 @@ def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None):
         ac = a
         if floor is not None and float(target_mean.mean()) < floor:
             ac = torch.ones_like(a)   # under-exposed target: the clean capture keeps its natural exposure
+            if clean_mean is not None:
+                return (a * y).clamp(0, 1), _to_mean(c, clean_mean)
         return (a * y).clamp(0, 1), (ac * c).clamp(0, 1)
     changes_exposure = chain['exposure'] or chain['scene'] == 'haze'
     if target_mean is None or changes_exposure:
-        return _run_chain(c, chain, g, target_mean), c
+        y = _run_chain(c, chain, g, target_mean)
+        return y, (c if clean_mean is None else _to_mean(c, clean_mean))
     k = (target_mean / _chan_mean(c)).clamp(0.1, 10.0)
     if mode == 'fit':
         # same random draws on every pass, so only the scene gain changes. The output mean is (up to clipping)
@@ -300,7 +313,7 @@ def draw_chain(families, g):
     return FAMILY_CHAINS[families[int(torch.randint(len(families), (1,), generator=g))]]
 
 
-def degrade_batch(c, families, g, target_mean=None, mode='fit', select=None, k=1, floor=None):
+def degrade_batch(c, families, g, target_mean=None, mode='fit', select=None, k=1, floor=None, clean_mean=None):
     """Degrade each image of ``c`` (B,3,H,W). ``families``: list from ``parse_families``; ``mode``: exposure
     matching ('fit' / 'clean' / 'gain', used when ``target_mean`` is given).
 
@@ -311,12 +324,12 @@ def degrade_batch(c, families, g, target_mean=None, mode='fit', select=None, k=1
     for i in range(c.shape[0]):
         if select is None or k <= 1:
             chain = draw_chain(families, g)
-            y, ci = apply_chain(c[i:i + 1], chain, g, target_mean, mode, floor)
+            y, ci = apply_chain(c[i:i + 1], chain, g, target_mean, mode, floor, clean_mean)
         else:
             cand = []
             for _ in range(k):
                 ch = draw_chain(families, g)
-                yk, ck = apply_chain(c[i:i + 1], ch, g, target_mean, mode, floor)
+                yk, ck = apply_chain(c[i:i + 1], ch, g, target_mean, mode, floor, clean_mean)
                 cand.append((ch, yk, ck))
             sc = select(torch.cat([t[1] for t in cand], 0))
             j = int(torch.argmin(sc))

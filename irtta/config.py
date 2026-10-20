@@ -63,6 +63,11 @@ def get_parser():
     g.add_argument('--dark_q', type=float, default=0.0,
                    help='gain/camera matching: target patches darker than this quantile of clean-bank image '
                         'brightness are under-exposed; their pairs keep natural-exposure clean images (0 = off)')
+    g.add_argument('--dark_anchor', action='store_true',
+                   help='with --dark_q: clean images of under-exposed target patches take the frozen source\'s output '
+                        'brightness for that patch instead of their natural exposure')
+    g.add_argument('--nss_color', action='store_true',
+                   help='add dark-channel and saturation statistics to the NSS features (haze vs blur)')
     g.add_argument('--abc_k', type=int, default=1,
                    help='ABC pair selection: draw k candidate degradations per clean crop, keep the one whose NSS '
                         'features are closest to the target set (Mahalanobis); 1 = off (irtta/nss.py)')
@@ -163,7 +168,7 @@ def get_args(argv=None):
 # (method, subset, anchor+lambda, regime, target, source, lr, seeds, tag are).
 SEMANTIC_ARGS = OrderedDict([
     ('families', 'fam'), ('bank', 'bk'), ('bank_max', 'bm'), ('bank_patch', 'bp'), ('bank_batch', 'bb'),
-    ('exposure_match', 'em'), ('dark_q', 'dq'), ('abc_k', 'abc'), ('abc_eps_q', 'abq'), ('abc_fit_n', 'abn'), ('cons_weight', 'cw'), ('cons_band', 'cbd'),
+    ('exposure_match', 'em'), ('dark_q', 'dq'), ('dark_anchor', 'da'), ('nss_color', 'nc'), ('abc_k', 'abc'), ('abc_eps_q', 'abq'), ('abc_fit_n', 'abn'), ('cons_weight', 'cw'), ('cons_band', 'cbd'),
     ('redeg_weight', 'rw'), ('nss_weight', 'nw'), ('ext_alpha', 'ea'), ('n_apply', 'na'), ('ema_decay', 'ema'),
     ('iterations', 'it'), ('pixel_weight', 'pix'), ('perceptual_weight', 'vgg'), ('lowpass_weight', 'lp'),
     ('teacher_weight', 'tw'), ('beta1', 'b1'), ('beta2', 'b2'),
@@ -173,7 +178,7 @@ SEMANTIC_ARGS = OrderedDict([
     ('steps_per_image', 'spi'), ('patches_per_step', 'pps'), ('stream_order', 'so'), ('online_predict', 'op'),
     ('max_images', 'mi'), ('crop_base', 'cb'), ('backbone_opts', 'bo'),
 ])
-_TRANSFER_ARGS = ('families', 'bank', 'bank_max', 'bank_patch', 'bank_batch', 'exposure_match', 'dark_q', 'abc_k', 'abc_eps_q',
+_TRANSFER_ARGS = ('families', 'bank', 'bank_max', 'bank_patch', 'bank_batch', 'exposure_match', 'dark_q', 'dark_anchor', 'nss_color', 'abc_k', 'abc_eps_q',
                   'abc_fit_n',
                   'cons_weight', 'cons_band', 'redeg_weight', 'nss_weight')
 _FLOW_ARGS = ('ext_alpha', 'n_apply')

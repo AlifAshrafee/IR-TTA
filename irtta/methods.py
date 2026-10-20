@@ -11,6 +11,7 @@
 """
 import logging
 from copy import deepcopy
+from functools import partial
 
 import torch
 import torch.nn.functional as F
@@ -180,7 +181,8 @@ class TransferMethod(_OptimMethod):
         self.gen = torch.Generator().manual_seed(int(args.seed) + 3)
         self.gen_t = torch.Generator().manual_seed(int(args.seed) + 5)   # target-side draws (crops, D)
         self.fam_counts = {}
-        self.need_teacher = args.cons_weight > 0 or args.redeg_weight > 0
+        self.need_teacher = args.cons_weight > 0 or args.redeg_weight > 0 or args.dark_anchor
+        self._feat = partial(nss_features, color=args.nss_color)
         self.teacher = None
         if self.need_teacher:   # frozen theta_0 (LoRA zero-init: the source function)
             self.teacher = deepcopy(model).eval()
@@ -209,7 +211,7 @@ class TransferMethod(_OptimMethod):
             with torch.random.fork_rng(devices=[]):   # iterating a DataLoader draws from the global RNG
                 for _, x, _ in loader:
                     crops = random_crop_batch(x, a.bank_patch, 2, self.gen_t).to(self.device)
-                    feats.append(nss_features(crops))
+                    feats.append(self._feat(crops))
                     n += crops.shape[0]
                     if n >= a.abc_fit_n:
                         break
@@ -225,14 +227,14 @@ class TransferMethod(_OptimMethod):
             feats = []
             for i in range(0, a.abc_fit_n, 16):
                 c = self.bank.sample(16, a.bank_patch * 2, self.gen_t)
-                feats.append(nss_features(c[:8, :, :a.bank_patch, :a.bank_patch].to(self.device)))
-                feats.append(nss_features(downscale_crops(c[8:], 2).to(self.device)))
+                feats.append(self._feat(c[:8, :, :a.bank_patch, :a.bank_patch].to(self.device)))
+                feats.append(self._feat(downscale_crops(c[8:], 2).to(self.device)))
             self.clean_model = GaussianModel(torch.cat(feats, 0)).to(self.device)
             if self.target_model is not None:
                 logger.info(f"NSS: KL(target || clean) = {self.clean_model.kl_from(self.target_model):.2f}")
 
     def _select(self, cand):
-        return self.target_model.distance(nss_features(cand))
+        return self.target_model.distance(self._feat(cand))
 
     def _band(self, t):
         if self.args.cons_band == 'high':
@@ -249,8 +251,15 @@ class TransferMethod(_OptimMethod):
                 c = self.bank.sample(a.bank_batch, a.bank_patch, self.gen).to(self.device)
                 tmean = x.mean(dim=(0, 2, 3), keepdim=True) if a.exposure_match != 'none' else None
                 select = self._select if self.target_model is not None else None
+                f0x = self.teacher(x) if (a.cons_weight > 0 or a.redeg_weight > 0) else None
+                cmean = None
+                if a.dark_anchor and self.floor is not None and tmean is not None and float(tmean.mean()) < self.floor:
+                    if f0x is None:
+                        f0x = self.teacher(x)
+                    cmean = f0x.clamp(0, 1).mean(dim=(0, 2, 3), keepdim=True)   # the source's exposure for x
+                    st['dark_anchor'] = float(cmean.mean())
                 y, c, fams, scores = degrade_batch(c, self.families, self.gen, tmean, a.exposure_match,
-                                                   select=select, k=a.abc_k, floor=self.floor)
+                                                   select=select, k=a.abc_k, floor=self.floor, clean_mean=cmean)
                 if scores:
                     st['abc_d'] = sum(scores) / len(scores)
                 if self.abc_eps is not None and scores:
@@ -263,7 +272,6 @@ class TransferMethod(_OptimMethod):
                     if len(keep) < len(scores):
                         y, c = y[keep], c[keep]
                         fams = [fams[i] for i in keep]
-                f0x = self.teacher(x) if self.need_teacher else None
                 if a.redeg_weight > 0:
                     chain = draw_chain(self.families, self.gen_t)
                     dx, xk = apply_chain(x, chain, self.gen_t, tmean, 'fit')
@@ -286,7 +294,7 @@ class TransferMethod(_OptimMethod):
                     tgt = tgt + a.cons_weight * cons
                     st['cons'] = float(cons)
                 if a.nss_weight > 0:
-                    nss = self.clean_model.distance(nss_features(fx.clamp(0, 1))).mean()
+                    nss = self.clean_model.distance(self._feat(fx.clamp(0, 1))).mean()
                     tgt = tgt + a.nss_weight * nss
                     st['nss'] = float(nss)
                 tgt.backward()

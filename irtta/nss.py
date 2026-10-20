@@ -64,13 +64,24 @@ def _scale_features(y, w, C=1 / 255, border=3):
     return feats
 
 
-def nss_features(x):
-    """x: (B, 3, H, W) in [0, 1], H, W >= 32 -> (B, 30) features (differentiable)."""
+def nss_features(x, color=False):
+    """x: (B, 3, H, W) in [0, 1], H, W >= 32 -> (B, 30) features (differentiable); ``color`` appends 2 (B, 32).
+
+    Colour features (gain-invariant ratios), for what luminance MSCN cannot see -- haze vs blur:
+      dark channel / brightness: mean of min over RGB and a 15x15 window, over mean luminance. Haze-free images
+        have a near-zero dark channel and airlight raises it (He, Sun & Tang, CVPR 2009);
+      saturation: mean (max - min) / max over RGB; scattering desaturates toward the airlight colour."""
     y = luminance(x)
     w = _window(x.device, x.dtype)
     feats = _scale_features(y, w)
     y2 = F.avg_pool2d(y, 2)
     feats += _scale_features(y2, w)
+    if color:
+        dc = -F.max_pool2d(-x.min(dim=1, keepdim=True).values, 15, stride=1, padding=7)
+        lum = y.mean(dim=(1, 2, 3)) + 1e-3
+        feats.append(dc.mean(dim=(1, 2, 3)) / lum)
+        mx, mn = x.max(dim=1).values, x.min(dim=1).values
+        feats.append(((mx - mn) / (mx + 1e-3)).mean(dim=(1, 2)))
     return torch.stack(feats, dim=1)
 
 

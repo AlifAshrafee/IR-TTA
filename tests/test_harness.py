@@ -177,6 +177,11 @@ def test_degradations():
     yb, cb = D.apply_chain(c1, rain, g, tm, 'camera', floor=0.2)      # a bright target is unaffected
     g.set_state(st)
     assert torch.equal(cb, D.apply_chain(c1, rain, g, tm, 'camera')[1])
+    # dark anchor: an under-exposed target's clean image takes the given exposure (here: from the source)
+    anchor_m = torch.tensor([0.45, 0.40, 0.35]).view(1, 3, 1, 1)
+    for ch in (rain, D.FAMILY_CHAINS['lowlight']):
+        y, cc = D.apply_chain(c1, ch, g, dark, 'camera', floor=0.2, clean_mean=anchor_m)
+        assert torch.allclose(cc.mean(dim=(2, 3), keepdim=True), anchor_m, atol=0.02), D.chain_label(ch)
     # ABC: with a selector the lowest-scoring candidate is kept
     picks = D.degrade_batch(c[:2], ['compose'], g, None, 'fit', select=lambda t: -t.mean(dim=(1, 2, 3)), k=6)
     assert len(picks[3]) == 2 and picks[0].shape == c[:2].shape
@@ -188,6 +193,12 @@ def test_nss():
     x = torch.rand(4, 3, 96, 96, generator=g) * 0.6 + 0.2
     f = N.nss_features(x)
     assert f.shape == (4, N.N_FEATURES) and torch.isfinite(f).all()
+    fc = N.nss_features(x, color=True)
+    assert fc.shape == (4, N.N_FEATURES + 2) and torch.equal(fc[:, :N.N_FEATURES], f)
+    hazy = 0.5 * x + 0.5 * torch.tensor([0.9, 0.9, 0.95]).view(1, 3, 1, 1)
+    hc = N.nss_features(hazy, color=True)
+    assert (hc[:, -2] > fc[:, -2]).all() and (hc[:, -1] < fc[:, -1]).all(), "haze: dark channel up, saturation down"
+    assert torch.allclose(N.nss_features(x * 0.7, color=True)[:, -2:], fc[:, -2:], rtol=0.05, atol=1e-3)
     # MSCN statistics nearly ignore a global gain (only the log-contrast features move). Not exactly: the
     # stabilising constant C = 1/255 in (I - mu) / (sigma + C) does not scale, so a few % change is expected
     f2 = N.nss_features((x * 0.7).clamp(0, 1))
@@ -315,7 +326,7 @@ def test_end_to_end():
     _run(['--method', 'transfer', '--exposure_match', 'clean', '--tag', 'v02', '--target', 'Tiny', '--max_steps', '2',
           '--bank_patch', '64', '--bank_batch', '2'])
     # every extra term at once (ABC selection, target and re-degradation consistency, NSS prior, L2 anchor)
-    r_all = _run(['--method', 'transfer', '--families', 'all', '--exposure_match', 'camera', '--dark_q', '0.05',
+    r_all = _run(['--method', 'transfer', '--families', 'all', '--exposure_match', 'camera', '--dark_q', '0.05', '--dark_anchor', '--nss_color',
                   '--abc_k', '3',
                   '--abc_fit_n', '8', '--cons_weight', '0.5', '--cons_band', 'high', '--redeg_weight', '0.5',
                   '--nss_weight', '0.02', '--anchor', 'l2', '--anchor_lambda', '0.01', '--target', 'Tiny',
