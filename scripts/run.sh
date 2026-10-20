@@ -20,6 +20,7 @@
 #          ABC-selected pairs) moves the model; + source/input rows in results/tta
 #   tta_a2 A4/A5: 'camera' matching (v0's gain for rain/haze/blur/noise, fit for under-exposure), +/- ABC
 #   tta_a4 A7 = $BASE: camera matching + ABC + under-exposure threshold (--dark_q 0.05)
+#   tta_c  C1 = $BASE + ABC tolerance (--abc_eps_q 0.9); C2 = C1 + L2 anchor
 #   tta_b  loss study B: the regularisers on top of $BASE (default: ABC-selected pairs), one at a time, then all
 #   agg    results/$EXP/summary.csv + tables (table_<setting>_<backbone>.md, table_backbones.md)
 #   guard  DCTTA regression guard (adapt.py vs harness, Rain100H 3-task) -- only after touching dctta/
@@ -141,6 +142,11 @@ stage_tta_a2() {   # the physical matching rule, with and without ABC
 
 stage_tta_a4() {   # A4 + under-exposure threshold (LOLv2 fix; identical to A4 on bright targets)
   tta A7 $BASE
+}
+
+stage_tta_c() {   # ABC with a tolerance: adapt only on pairs that are plausible target samples
+  tta C1 $BASE --abc_eps_q 0.9
+  tta C2 $BASE --abc_eps_q 0.9 --anchor l2 --anchor_lambda 0.001
 }
 
 stage_tta_b() {

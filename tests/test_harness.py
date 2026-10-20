@@ -324,6 +324,11 @@ def test_end_to_end():
     assert r_all['steps'] == 3 and 'abc=3' in r_all['run_id'] and r_all['psnr'] > 0, r_all['run_id']
     stats = [json.loads(l) for l in open(os.path.join(t['dir'], 'results', 'test', r_all['run_id'], 'stats.jsonl'))]
     assert all(k in stats[-1] for k in ('abc_d', 'cons', 'redeg', 'nss')), stats[-1].keys()
+    # ABC tolerance: an impossible tolerance skips every step; a loose one accepts every pair
+    r_rej = _run(['--method', 'transfer', '--families', 'all', '--abc_k', '2', '--abc_fit_n', '8', '--abc_eps_q', '1e-9',
+                  '--target', 'Tiny', '--max_steps', '3', '--bank_patch', '64', '--bank_batch', '2', '--log_stats',
+                  '--tag', 'rej'])
+    assert r_rej['steps'] + r_rej['skipped'] == 3, (r_rej['steps'], r_rej['skipped'])
     # another backbone through the same harness (run id carries the backbone; DCTTA uses its prefix rule)
     ckpt_ad = t['ckpt_adair']
     for meth in ('source', 'transfer', 'dctta'):

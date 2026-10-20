@@ -193,6 +193,7 @@ class TransferMethod(_OptimMethod):
             logger.info(f"under-exposure threshold: target patches darker than {self.floor:.3f} "
                         f"(q={args.dark_q} of {len(means)} clean-bank image means) keep natural-exposure clean images")
         self.target_model = None   # N(mu_T, Sigma_T) of target NSS (ABC)
+        self.abc_eps = None        # ABC tolerance (--abc_eps_q)
         self.clean_model = None    # N(mu_C, Sigma_C) of clean NSS (output prior)
         self._snapshot()
 
@@ -212,8 +213,14 @@ class TransferMethod(_OptimMethod):
                     n += crops.shape[0]
                     if n >= a.abc_fit_n:
                         break
-            self.target_model = GaussianModel(torch.cat(feats, 0)).to(self.device)
-            logger.info(f"ABC: target NSS Gaussian from {n} crops of {a.bank_patch}px")
+            tf = torch.cat(feats, 0)
+            self.target_model = GaussianModel(tf).to(self.device)
+            own = self.target_model.distance(tf)
+            logger.info(f"ABC: target NSS Gaussian from {n} crops of {a.bank_patch}px; target crops' own distance "
+                        f"median {float(own.median()):.2f}, q90 {float(torch.quantile(own, 0.9)):.2f}")
+            if a.abc_eps_q > 0:   # ABC tolerance: as far from the target as its own q-quantile crop
+                self.abc_eps = float(torch.quantile(own, a.abc_eps_q))
+                logger.info(f"ABC tolerance eps = {self.abc_eps:.2f} (q={a.abc_eps_q} of the target crops' distances)")
         if a.nss_weight > 0:
             feats = []
             for i in range(0, a.abc_fit_n, 16):
@@ -246,6 +253,16 @@ class TransferMethod(_OptimMethod):
                                                    select=select, k=a.abc_k, floor=self.floor)
                 if scores:
                     st['abc_d'] = sum(scores) / len(scores)
+                if self.abc_eps is not None and scores:
+                    keep = [i for i, d in enumerate(scores) if d <= self.abc_eps]
+                    st['abc_accept'] = len(keep) / len(scores)
+                    if not keep:   # no synthetic pair is a plausible target sample: no update
+                        self.skipped += 1
+                        self.last_stats = {**st, 'skipped': 1, 'x_in': float(x.mean())}
+                        continue
+                    if len(keep) < len(scores):
+                        y, c = y[keep], c[keep]
+                        fams = [fams[i] for i in keep]
                 f0x = self.teacher(x) if self.need_teacher else None
                 if a.redeg_weight > 0:
                     chain = draw_chain(self.families, self.gen_t)
