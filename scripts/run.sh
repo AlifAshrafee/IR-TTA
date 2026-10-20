@@ -16,6 +16,7 @@
 #   probe  Q1 + Q2a (tools/scale_probe.py, no training), backbones in $BBS, test + validation sets;
 #          report: results/probe/probe_<setting>.md
 #   ref    source only, HIDE, all six 5-task backbones (the co-author's reference table has no HIDE column)
+#   ours_dark  A9 = A8 + --dark_skip on the 5-task low-light sets (LOLv2, LOLv2_Syn, LOLv2_val)
 #   ours   A8 on the suite for $BBS x $SETTINGS (ONLYTEST=1 skips the *_val sets)
 #   tta_a  loss study A, PromptIR 5-task validation sets ($TSETS): which pair signal (v0.2 'all', v0 'gain' on rain,
 #          ABC-selected pairs) moves the model; + source/input rows in results/tta
@@ -180,6 +181,18 @@ stage_ours() {
           --families $FAM --abc_k 8 --exposure_match camera --dark_q 0.05 --nss_color --dark_anchor
     done
   done; done
+}
+
+# A9 = A8 + abstention on under-exposed patches (--dark_skip), 5-task low-light sets only (elsewhere = A8)
+stage_ours_dark() {
+  local B M T
+  for B in $BBS; do
+    M=$(model_args $B 5task) || continue
+    for T in LOLv2 LOLv2_Syn LOLv2_val; do
+      run --method transfer $M --target $T $(size_args $T) --max_steps 500 --eval_alphas 0.5 1.0 --tag A9 \
+          --families all --abc_k 8 --exposure_match camera --dark_q 0.05 --nss_color --dark_anchor --dark_skip
+    done
+  done
 }
 
 stage_agg() {

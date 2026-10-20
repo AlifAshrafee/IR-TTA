@@ -250,6 +250,12 @@ class TransferMethod(_OptimMethod):
             with torch.no_grad():
                 c = self.bank.sample(a.bank_batch, a.bank_patch, self.gen).to(self.device)
                 tmean = x.mean(dim=(0, 2, 3), keepdim=True) if a.exposure_match != 'none' else None
+                if a.dark_skip and self.floor is not None and tmean is not None and float(tmean.mean()) < self.floor:
+                    # under-exposed patch: the clean exposure / tone curve is not identifiable from the input, so
+                    # no synthetic pair can supervise it -- abstain (the source keeps its learned mapping)
+                    self.skipped += 1
+                    self.last_stats = {'skipped': 1, 'dark_skip': 1, 'x_in': float(x.mean())}
+                    continue
                 select = self._select if self.target_model is not None else None
                 f0x = self.teacher(x) if (a.cons_weight > 0 or a.redeg_weight > 0) else None
                 cmean = None

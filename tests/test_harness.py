@@ -340,6 +340,11 @@ def test_end_to_end():
                   '--target', 'Tiny', '--max_steps', '3', '--bank_patch', '64', '--bank_batch', '2', '--log_stats',
                   '--tag', 'rej'])
     assert r_rej['steps'] + r_rej['skipped'] == 3, (r_rej['steps'], r_rej['skipped'])
+    # dark skip: the Tiny target patches are darker than the bank's 0.99 quantile -> every step abstains
+    r_dk = _run(['--method', 'transfer', '--families', 'all', '--exposure_match', 'camera', '--dark_q', '0.99',
+                 '--dark_skip', '--target', 'Tiny', '--max_steps', '3', '--bank_patch', '64', '--bank_batch', '2',
+                 '--tag', 'dk'])
+    assert r_dk['skipped'] == 3 and r_dk['steps'] == 0 and abs(r_dk['psnr'] - r_src['psnr']) < 1e-4, r_dk
     # another backbone through the same harness (run id carries the backbone; DCTTA uses its prefix rule)
     ckpt_ad = t['ckpt_adair']
     for meth in ('source', 'transfer', 'dctta'):
