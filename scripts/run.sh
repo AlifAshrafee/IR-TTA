@@ -16,7 +16,7 @@
 #   probe  Q1 + Q2a (tools/scale_probe.py, no training), backbones in $BBS, test + validation sets;
 #          report: results/probe/probe_<setting>.md
 #   ref    source only, HIDE, all six 5-task backbones (the co-author's reference table has no HIDE column)
-#   ours_dark  A9 = A8 + --dark_skip on the 5-task low-light sets (LOLv2, LOLv2_Syn, LOLv2_val)
+#   ours_dark  A9 = A8 + --dark_skip on the 5-task low-light sets (LOLv2_Syn, LOLv2_Syn_val)
 #   ours   A8 on the suite for $BBS x $SETTINGS (ONLYTEST=1 skips the *_val sets)
 #   tta_a  loss study A, PromptIR 5-task validation sets ($TSETS): which pair signal (v0.2 'all', v0 'gain' on rain,
 #          ABC-selected pairs) moves the model; + source/input rows in results/tta
@@ -49,10 +49,11 @@ declare -A CK=(
 )
 declare -A BOPTS=( [moceir]="routing_noise=False" )   # deterministic routing (the official router adds noise at test time)
 
-# each source is evaluated on its own families only (O-HAZY is the haze validation set and a flagged test set)
+# each source is evaluated on its own families only (O-HAZY is the haze validation set and a flagged test set).
+# LOLv2-Real (test and train) is out: its scenes are LOL-v1 training scenes (tools/overlap_check.py: 91/100)
 declare -A TARGETS=(
   [3task]="Rain100H SOTS_Indoor DenseHaze OHAZY Kodak24_Poisson Rain100H_val"
-  [5task]="Rain100H SOTS_Indoor DenseHaze OHAZY Kodak24_Poisson HIDE LOLv2 LOLv2_Syn Rain100H_val HIDE_val LOLv2_val"
+  [5task]="Rain100H SOTS_Indoor DenseHaze OHAZY Kodak24_Poisson HIDE LOLv2_Syn Rain100H_val HIDE_val LOLv2_Syn_val"
 )
 
 run() { CUDA_VISIBLE_DEVICES=$GPU python run_tta.py --num_workers $NW --exp "$EXP" --seed $SEED "$@"; }
@@ -110,7 +111,7 @@ stage_ref() {
 }
 
 # ---- loss study (results/tta, PromptIR 5-task, validation sets only; mixes 0.5 and 1 evaluated for free) ----
-TSETS=${TSETS:-"Rain100H_val HIDE_val LOLv2_val OHAZY"}
+TSETS=${TSETS:-"Rain100H_val HIDE_val LOLv2_Syn_val OHAZY"}
 BASE=${BASE:-"--families all --abc_k 8 --exposure_match camera --dark_q 0.05"}
 tta() {   # tta <tag> <flags...>: one transfer run per set in $TSETS
   local tag=$1; shift
@@ -183,12 +184,12 @@ stage_ours() {
   done; done
 }
 
-# A9 = A8 + abstention on under-exposed patches (--dark_skip), 5-task low-light sets only (elsewhere = A8)
+# A9 = A8 + abstention on under-exposed patches (--dark_skip), 5-task low-light sets only (elsewhere ~ A8)
 stage_ours_dark() {
   local B M T
   for B in $BBS; do
     M=$(model_args $B 5task) || continue
-    for T in LOLv2 LOLv2_Syn LOLv2_val; do
+    for T in LOLv2_Syn LOLv2_Syn_val; do
       run --method transfer $M --target $T $(size_args $T) --max_steps 500 --eval_alphas 0.5 1.0 --tag A9 \
           --families all --abc_k 8 --exposure_match camera --dark_q 0.05 --nss_color --dark_anchor --dark_skip
     done

@@ -37,7 +37,8 @@
     "lq": "{root}/Test/enhance/LOL_v2_Real/LQ",
     "gt": "{root}/Test/enhance/LOL_v2_Real/GT",
     "split": "test",
-    "task": "enhance"
+    "task": "enhance",
+    "note": "NOT in the suites: 91/100 test scenes are near-duplicates of LOL-v1 training images (tools/overlap_check.py), i.e. in-distribution for every 5-task model"
   },
   "Kodak24_Poisson": {
     "lq": "{root}/Test/denoise/Kodak24_Poisson/LQ",
@@ -83,7 +84,15 @@
     "lq": "{root}/Train/enhance/LOL_v2_Real/LQ",
     "gt": "{root}/Train/enhance/LOL_v2_Real/GT",
     "split": "val",
-    "task": "enhance"
+    "task": "enhance",
+    "note": "NOT in the suites: LOLv2-Real is built on LOL-v1 scenes (see LOLv2); replaced by LOLv2_Syn_val"
+  },
+  "LOLv2_Syn_val": {
+    "lq": "{root}/Train/enhance/LOL_v2_Synthetic/LQ",
+    "gt": "{root}/Train/enhance/LOL_v2_Synthetic/GT",
+    "split": "val",
+    "task": "enhance",
+    "note": "LOLv2-Synthetic train (900, RAISE scenes, no LOL-v1 overlap); runs use 300 evenly spaced"
   },
   "Rain100H_val": {
     "lq": "{root}/Train/derain/RainTrainH/LQ",

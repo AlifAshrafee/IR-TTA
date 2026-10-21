@@ -23,12 +23,13 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TESTS = {
     '3task': ['Rain100H', 'SOTS_Indoor', 'DenseHaze', 'OHAZY', 'Kodak24_Poisson'],
     '5task': ['Rain100H', 'SOTS_Indoor', 'DenseHaze', 'OHAZY', 'Kodak24_Poisson',
-              'HIDE', 'LOLv2', 'LOLv2_Syn'],
+              'HIDE', 'LOLv2_Syn'],
 }
-VALS = {'3task': ['Rain100H_val'], '5task': ['Rain100H_val', 'HIDE_val', 'LOLv2_val']}
+# LOLv2-Real (test and train) is out: its scenes are LOL-v1 training scenes (tools/overlap_check.py)
+VALS = {'3task': ['Rain100H_val'], '5task': ['Rain100H_val', 'HIDE_val', 'LOLv2_Syn_val']}
 SHORT = {'Rain100H': 'Rain100H', 'SOTS_Indoor': 'SOTS-In', 'DenseHaze': 'DenseHaze', 'OHAZY': 'O-HAZY*',
          'Kodak24_Poisson': 'Kodak', 'HIDE': 'HIDE', 'LOLv2': 'LOLv2', 'LOLv2_Syn': 'LOLv2-S',
-         'Rain100H_val': 'Rain val', 'HIDE_val': 'HIDE val', 'LOLv2_val': 'LOLv2 val'}
+         'Rain100H_val': 'Rain val', 'HIDE_val': 'HIDE val', 'LOLv2_val': 'LOLv2 val', 'LOLv2_Syn_val': 'LOLv2-S val'}
 NAMES = {'promptir': 'PromptIR', 'adair': 'AdaIR', 'bioir': 'Bio-IR', 'moceir': 'MoCE-IR', 'mirage': 'MIRAGE',
          'r2r': 'R2R'}
 ORDER = ['Input', 'Source', 'Reported', 'Source flow', 'DCTTA', 'Ours']
