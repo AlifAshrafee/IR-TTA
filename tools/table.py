@@ -15,11 +15,25 @@ the source.
 """
 import argparse
 import csv
+import json
 import math
 import os
 from collections import OrderedDict
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _y_targets():
+    """Registry sets reported in luminance PSNR ('metric': 'y', the deraining convention)."""
+    try:
+        with open(os.path.join(REPO, 'configs', 'datasets.json')) as f:
+            reg = json.load(f)
+        return {k for k, v in reg.items() if isinstance(v, dict) and v.get('metric') == 'y'}
+    except (OSError, ValueError):
+        return set()
+
+
+Y_TARGETS = _y_targets()
 TESTS = {
     '3task': ['Rain100H', 'SOTS_Indoor', 'DenseHaze', 'OHAZY', 'Kodak24_Poisson'],
     '5task': ['Rain100H', 'SOTS_Indoor', 'DenseHaze', 'OHAZY', 'Kodak24_Poisson',
@@ -41,6 +55,17 @@ def num(v):
         return None if math.isnan(f) else f
     except (TypeError, ValueError):
         return None
+
+
+def value(r):
+    """(mean, std, fallback) of the reported metric: Y-PSNR for 'metric': 'y' sets, else RGB. Runs made before
+    Y-PSNR was recorded fall back to RGB, marked with a dagger in the tables (fallback=True)."""
+    if r['target'] in Y_TARGETS:
+        m = num(r.get('psnr_y_mean'))
+        if m is not None:
+            return m, num(r.get('psnr_y_std')), False
+        return num(r['psnr_mean']), num(r['psnr_std']), True
+    return num(r['psnr_mean']), num(r['psnr_std']), False
 
 
 def label(r):
@@ -87,7 +112,8 @@ def build(summary_rows, setting, backbone):
         if r['target'] in cell:  # two configs collapse to one label: keep them apart
             lbl = f"{lbl} [{r['cfg']}]"
             cell = table.setdefault(lbl, {})
-        cell[r['target']] = (num(r['psnr_mean']), num(r['psnr_std']), int(float(r['n_seeds'])))
+        m, sd, fb = value(r)
+        cell[r['target']] = (m, sd, int(float(r['n_seeds'])), fb)
     sota_path = os.path.join(REPO, 'configs', f'sota_{setting}.csv')
     if os.path.exists(sota_path):
         with open(sota_path) as f:
@@ -121,8 +147,8 @@ def render(cols, rows, setting):
             if c not in cell or cell[c][0] is None:
                 out.append('')
                 continue
-            m, sd, n = cell[c]
-            txt = f"{m:.2f}" + (f"±{sd:.2f}" if n > 1 and sd else '')
+            m, sd, n = cell[c][:3]
+            txt = f"{m:.2f}" + (f"±{sd:.2f}" if n > 1 and sd else '') + ('†' if len(cell[c]) > 3 and cell[c][3] else '')
             out.append(f"**{txt}**" if best[c] is not None and abs(m - best[c]) < 1e-9 and not _is_input(lbl) else txt)
         out.append(_avg(cell, tests))
         lines.append('| ' + ' | '.join(out) + ' |')
@@ -148,7 +174,7 @@ def summary_table(summary, args):
                       and (r.get('exposure_match') or 'fit') == args.exposure_match):
                     key = f"ours{num(r.get('eval_alpha')) or 1.0:g}"
                 if key:
-                    cols.setdefault(key, {})[r['target']] = (num(r['psnr_mean']), None, 1)
+                    cols.setdefault(key, {})[r['target']] = (value(r)[0], None, 1)
             if 'src' not in cols:
                 continue
             avg = {k: _avg(v, tests) for k, v in cols.items()}
@@ -178,7 +204,9 @@ def main():
             if not any(lbl == 'Source' for lbl, _ in rows):
                 continue
             md = (f"## {NAMES[bb]} {setting} source -- PSNR (dB)\n\nTest sets, then validation sets "
-                  f"(* O-HAZY is both). Bold = best non-input value per column.\n\n" + render(cols, rows, setting))
+                  f"(* O-HAZY is both). Bold = best non-input value per column. Rain sets: luminance PSNR "
+                  f"(BT.601 Y, the deraining convention); others RGB. † = run made before Y-PSNR was recorded (RGB shown).\n\n"
+                  + render(cols, rows, setting))
             path = os.path.join(args.root, f'table_{setting}_{bb}.md')
             with open(path, 'w') as f:
                 f.write(md + '\n')

@@ -19,6 +19,8 @@ from dctta.data import PairedImageDataset
 from dctta.metrics import AverageMeter, compute_psnr_ssim
 from dctta.utils import save_image_tensor
 
+from .ymetrics import psnr_y
+
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +53,7 @@ class LPIPSMetric:
 
 def image_row(name, degraded, restored, clean, lpips_metric=None):
     psnr, ssim = compute_psnr_ssim(restored, clean)
-    row = {'name': name, 'psnr': float(psnr), 'ssim': float(ssim),
+    row = {'name': name, 'psnr': float(psnr), 'ssim': float(ssim), 'psnr_y': psnr_y(restored, clean),
            'lpips': lpips_metric(restored, clean) if lpips_metric is not None else math.nan,
            'in_mean': float(degraded.mean()), 'out_mean': float(restored.clamp(0, 1).mean()),
            'gt_mean': float(clean.mean())}
@@ -92,7 +94,7 @@ def summarize(rows, psnr=None, ssim=None):
 
     return {'n': n, 'psnr': float(psnr) if psnr is not None else mean('psnr'),
             'ssim': float(ssim) if ssim is not None else mean('ssim'),
-            'lpips': mean('lpips'), 'drift': mean('drift')}
+            'psnr_y': mean('psnr_y'), 'lpips': mean('lpips'), 'drift': mean('drift')}
 
 
 def write_rows(path, rows):

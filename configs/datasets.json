@@ -1,5 +1,5 @@
 {
-  "_comment": "'{root}' expands to _root; relative paths are relative to the repo. Sets without 'lq' but with 'noise_sigma' are synthesised (irtta/data.py). 'split' = test (reported) | val (hyperparameter selection only) | source (in-distribution source-task sets: retention). Run tools/check_registry.py after any edit.",
+  "_comment": "'{root}' expands to _root; relative paths are relative to the repo. Sets without 'lq' but with 'noise_sigma' are synthesised (irtta/data.py). 'split' = test (reported) | val (hyperparameter selection only) | source (in-distribution source-task sets: retention). Run tools/check_registry.py after any edit. 'metric': 'y' = tables report luminance PSNR (BT.601 Y, 8-bit, peak 255; the deraining convention, irtta/ymetrics.py) for that set.",
   "_root": "../AiO-Datasets",
   "_banks": {
     "default": "{root}/Train/deblur/DIV2K/DIV2K_train_HR",
@@ -25,7 +25,8 @@
     "lq": "{root}/Test/derain/Rain100H/LQ",
     "gt": "{root}/Test/derain/Rain100H/GT",
     "split": "test",
-    "task": "derain"
+    "task": "derain",
+    "metric": "y"
   },
   "HIDE": {
     "lq": "{root}/Test/deblur/HIDE/LQ",
@@ -98,7 +99,8 @@
     "lq": "{root}/Train/derain/RainTrainH/LQ",
     "gt": "{root}/Train/derain/RainTrainH/GT",
     "split": "val",
-    "task": "derain"
+    "task": "derain",
+    "metric": "y"
   },
   "BSD68_s15": {
     "gt": "{root}/Test/denoise/BSD68",
@@ -125,7 +127,8 @@
     "lq": "{root}/Test/derain/Rain100L/LQ",
     "gt": "{root}/Test/derain/Rain100L/GT",
     "split": "source",
-    "task": "derain"
+    "task": "derain",
+    "metric": "y"
   },
   "SOTS_Outdoor": {
     "lq": "{root}/Test/dehaze/SOTS_Outdoor/LQ",

@@ -11,6 +11,9 @@ Evaluates the un-adapted source (and the input) once and scores every image unde
   y_bt601   the deraining convention (MATLAB rgb2ycbcr / BasicSR ``test_y_channel``): 8-bit RGB ->
             Y = 16 + (65.481 R + 128.553 G + 24.966 B) / 255 in [16, 235], peak 255
   ssim_y    SSIM on y_bt601 as BasicSR computes it (11x11 Gaussian, sigma 1.5, valid region)
+  ssim_y_sk SSIM on y_bt601 with scikit-image defaults (7x7 uniform window)
+  ssim_rgb  ours: scikit-image RGB SSIM, data range 1
+  ssim_rgb_bsr  BasicSR SSIM per RGB channel (8-bit), averaged
 
 and prints them next to the co-author's value (configs/sota_<setting>.csv). The convention whose column matches
 the co-author on every backbone is theirs.
@@ -40,7 +43,7 @@ CK = {  # same layout as scripts/run.sh
 }
 NAMES = {'promptir': 'PromptIR', 'adair': 'AdaIR', 'bioir': 'Bio-IR', 'moceir': 'MoCE-IR', 'mirage': 'MIRAGE',
          'r2r': 'R2R'}
-COLS = ['rgb', 'rgb_u8', 'y_luma', 'y_bt601', 'ssim_y']
+COLS = ['rgb', 'rgb_u8', 'y_luma', 'y_bt601', 'ssim_y', 'ssim_y_sk', 'ssim_rgb', 'ssim_rgb_bsr']
 
 
 def _psnr(a, b, peak):
@@ -70,8 +73,13 @@ def score(out, gt):
     ou, gu = (o * 255).round(), (g * 255).round()
     lum = lambda t: 0.299 * t[:, 0] + 0.587 * t[:, 1] + 0.114 * t[:, 2]  # noqa: E731
     yo, yg = _ybt601(ou).double(), _ybt601(gu).double()
+    from skimage.metrics import structural_similarity as sk_ssim
+    on, gn = o[0].permute(1, 2, 0).cpu().numpy(), g[0].permute(1, 2, 0).cpu().numpy()
     return {'rgb': _psnr(o, g, 1.0), 'rgb_u8': _psnr(ou, gu, 255.0), 'y_luma': _psnr(lum(o), lum(g), 1.0),
-            'y_bt601': _psnr(yo, yg, 255.0), 'ssim_y': _ssim_basicsr(yo, yg)}
+            'y_bt601': _psnr(yo, yg, 255.0), 'ssim_y': _ssim_basicsr(yo, yg),
+            'ssim_y_sk': sk_ssim(yg[0].cpu().numpy(), yo[0].cpu().numpy(), data_range=255),
+            'ssim_rgb': sk_ssim(gn, on, data_range=1, channel_axis=-1),
+            'ssim_rgb_bsr': sum(_ssim_basicsr(ou[:, k].double(), gu[:, k].double()) for k in range(3)) / 3}
 
 
 def reported(setting, target, method):
@@ -103,12 +111,13 @@ def main():
     args = ap.parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     ds = make_eval_dataset(resolve_spec(args.target))
-    head = ['Model', 'rgb (ours)', 'rgb_u8', 'y_luma', 'y_bt601', 'SSIM-Y', 'co-author PSNR', 'co-author SSIM']
+    head = ['Model', 'rgb (ours)', 'rgb_u8', 'y_luma', 'y_bt601', 'SSIM-Y bsr', 'SSIM-Y sk', 'SSIM-RGB (ours)',
+            'SSIM-RGB bsr', 'co-author PSNR', 'co-author SSIM']
     print(f"## {args.target}: un-adapted source under four PSNR conventions\n")
     print('| ' + ' | '.join(head) + ' |\n|' + '---|' * len(head))
     res = evaluate(None, ds, device)
     p, s = reported('5task', args.target, 'No IR')
-    print('| Input | ' + ' | '.join(f"{res[k]:.4f}" if k == 'ssim_y' else f"{res[k]:.2f}" for k in COLS) + f" | {p} | {s} |")
+    print('| Input | ' + ' | '.join(f"{res[k]:.4f}" if k.startswith('ssim') else f"{res[k]:.2f}" for k in COLS) + f" | {p} | {s} |")
     for key in args.models:
         ck = os.path.join(REPO, CK[key])
         if not os.path.exists(ck):
@@ -119,7 +128,7 @@ def main():
         model = build_model(bb, ck, **opts).to(device).eval()
         res = evaluate(model, ds, device)
         p, s = reported(setting, args.target, NAMES[bb])
-        print(f"| {NAMES[bb]} {setting} | " + ' | '.join(f"{res[k]:.4f}" if k == 'ssim_y' else f"{res[k]:.2f}"
+        print(f"| {NAMES[bb]} {setting} | " + ' | '.join(f"{res[k]:.4f}" if k.startswith('ssim') else f"{res[k]:.2f}"
                                                    for k in COLS) + f" | {p} | {s} |", flush=True)
         del model
         if device.type == 'cuda':

@@ -69,7 +69,7 @@ def resolve_spec(name, registry=None):
         raise KeyError(f"dataset '{name}' not in registry; known: {known}")
     e = reg[name]
     root = reg['_root_resolved']
-    known_keys = {'lq', 'gt', 'noise_sigma', 'noise_seed', 'split', 'task', 'max_side'}
+    known_keys = {'lq', 'gt', 'noise_sigma', 'noise_seed', 'split', 'task', 'max_side'}  # others -> extra (e.g. metric)
     return DataSpec(name=name, lq=_expand(e.get('lq'), root), gt=_expand(e['gt'], root),
                     noise_sigma=e.get('noise_sigma'), noise_seed=e.get('noise_seed', 0),
                     split=e.get('split', 'test'), task=e.get('task', ''), max_side=e.get('max_side'),
