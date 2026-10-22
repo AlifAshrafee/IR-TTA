@@ -73,7 +73,7 @@ Results: `results/<exp>/<run_id>/{run.log, config.json, result.json, per_image.c
 | `--method` | `identity`, `source`, `flow` (`--ext_alpha`, `--n_apply`), `transfer`, `dctta` |
 | `--subset` | `ln`, `lora<r>`, `full`, `all`, `re:<regex>`; `+`-joined |
 | `--anchor` | `none`, `l2` (`--anchor_lambda`); `tips` only with `--method dctta` |
-| transfer losses | `--exposure_match fit/clean/gain/none`, `--abc_k K` (ABC pair selection toward the target's NSS), `--cons_weight`/`--cons_band all/high` (target consistency to the frozen source), `--redeg_weight` (re-degradation consistency), `--nss_weight` (NSS output prior); see `irtta/methods.py`, `irtta/nss.py` |
+| transfer losses | `--exposure_match fit/clean/gain/none`, `--abc_k K` (ABC pair selection toward the target's NSS), `--cons_weight`/`--cons_band all/high` (target consistency to the frozen source), `--redeg_weight` (re-degradation consistency), `--nss_weight` (NSS output prior), `--dark_rule none/threshold/source` + `--dark_action skip/anchor/norm`, `--lowlight_op v1/v2`, `--bank_res native/target`, `--abc_topk`; see `irtta/methods.py`, `irtta/nss.py`, `irtta/degrade.py` |
 | `--regime` | `transductive` (`--max_steps`, `--epochs`), `online` / `episodic` (`--steps_per_image`, `--online_predict`) |
 | data | `--target <registry name>` or `--lq_dir/--gt_dir`; `--max_images N` adapts and evaluates on the same evenly spaced N images |
 | seeds | `--seed S`, `--dataset_seed` (default = seed; the DCTTA reference used 23/42) |

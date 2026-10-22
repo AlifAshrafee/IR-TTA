@@ -166,6 +166,11 @@ class TransferMethod(_OptimMethod):
             + anchor                                               --anchor l2: 0.5 lam ||theta - theta_0||^2
 
     ``sg`` = stop-gradient. Every extra term is off by default, which is transfer v0.1/v0.2.
+
+    Under-exposed target patches (``--dark_rule threshold|source``) get ``--dark_action``: ``skip`` (no update),
+    ``anchor`` (clean images take the source's output brightness) or ``norm`` (clean images keep their natural
+    exposure and the pair loss ignores overall brightness: L1(f(y) * mean(c) / mean(f(y)), c), so the pairs teach
+    noise / colour / detail and the brightening level stays where the source puts it).
     """
     name = 'transfer'
 
@@ -175,13 +180,17 @@ class TransferMethod(_OptimMethod):
         with torch.random.fork_rng(devices=[]):
             self.criterion = DCTTALoss(args.pixel_weight, args.perceptual_weight, args.lowpass_weight).to(self.device)
         self.families = parse_families(args.families, getattr(args, 'target_task', None))
-        self.bank = CleanBank(args.bank_path, max_images=args.bank_max, min_side=args.bank_patch)
+        self.bank = CleanBank(args.bank_path, max_images=args.bank_max, min_side=args.bank_patch,
+                              long_side=getattr(args, 'target_long', None))
+        if self.bank.long_side:
+            logger.info(f"clean bank resized to the target's typical long side ({self.bank.long_side}px)")
         logger.info(f"transfer: families {self.families}, bank {args.bank_path} ({len(self.bank)} images), "
                     f"{args.bank_batch} x {args.bank_patch}px pairs per step, exposure match '{args.exposure_match}'")
         self.gen = torch.Generator().manual_seed(int(args.seed) + 3)
         self.gen_t = torch.Generator().manual_seed(int(args.seed) + 5)   # target-side draws (crops, D)
         self.fam_counts = {}
-        self.need_teacher = args.cons_weight > 0 or args.redeg_weight > 0 or args.dark_anchor
+        self.need_teacher = (args.cons_weight > 0 or args.redeg_weight > 0 or args.dark_anchor
+                             or args.dark_rule == 'source' or (args.dark_rule != 'none' and args.dark_action == 'anchor'))
         self._feat = partial(nss_features, color=args.nss_color)
         self.teacher = None
         if self.need_teacher:   # frozen theta_0 (LoRA zero-init: the source function)
@@ -189,6 +198,8 @@ class TransferMethod(_OptimMethod):
             for p in self.teacher.parameters():
                 p.requires_grad_(False)
         self.floor = None
+        if args.dark_rule == 'threshold' and args.dark_q <= 0:
+            raise ValueError("--dark_rule threshold needs --dark_q > 0")
         if args.dark_q > 0:   # under-exposure threshold: a low quantile of clean-bank image brightness
             means = torch.tensor([float(img.mean()) / 255. for img in self.bank.images])
             self.floor = float(torch.quantile(means, args.dark_q))
@@ -250,22 +261,42 @@ class TransferMethod(_OptimMethod):
             with torch.no_grad():
                 c = self.bank.sample(a.bank_batch, a.bank_patch, self.gen).to(self.device)
                 tmean = x.mean(dim=(0, 2, 3), keepdim=True) if a.exposure_match != 'none' else None
-                if a.dark_skip and self.floor is not None and tmean is not None and float(tmean.mean()) < self.floor:
+                dark, norm, f0x = None, False, None
+                if a.dark_rule != 'none' and tmean is not None:   # new path: decide, then act
+                    if a.dark_rule == 'source':
+                        f0x = self.teacher(x)
+                        ratio = float(f0x.clamp(0, 1).mean()) / max(float(x.mean()), 1e-3)
+                        st['bright_ratio'] = ratio
+                        dark = ratio >= a.dark_ratio
+                    else:
+                        dark = float(tmean.mean()) < self.floor
+                    st['dark'] = int(dark)
+                    if dark and a.dark_action == 'skip':
+                        self.skipped += 1
+                        self.last_stats = {**st, 'skipped': 1, 'x_in': float(x.mean())}
+                        continue
+                    norm = dark and a.dark_action == 'norm'
+                if a.dark_rule == 'none' and a.dark_skip and self.floor is not None and tmean is not None \
+                        and float(tmean.mean()) < self.floor:
                     # under-exposed patch: the clean exposure / tone curve is not identifiable from the input, so
                     # no synthetic pair can supervise it -- abstain (the source keeps its learned mapping)
                     self.skipped += 1
                     self.last_stats = {'skipped': 1, 'dark_skip': 1, 'x_in': float(x.mean())}
                     continue
                 select = self._select if self.target_model is not None else None
-                f0x = self.teacher(x) if (a.cons_weight > 0 or a.redeg_weight > 0) else None
+                if f0x is None and (a.cons_weight > 0 or a.redeg_weight > 0):
+                    f0x = self.teacher(x)
                 cmean = None
-                if a.dark_anchor and self.floor is not None and tmean is not None and float(tmean.mean()) < self.floor:
+                legacy_anchor = (a.dark_rule == 'none' and a.dark_anchor and self.floor is not None
+                                 and tmean is not None and float(tmean.mean()) < self.floor)
+                if legacy_anchor or (dark and a.dark_action == 'anchor'):
                     if f0x is None:
                         f0x = self.teacher(x)
                     cmean = f0x.clamp(0, 1).mean(dim=(0, 2, 3), keepdim=True)   # the source's exposure for x
                     st['dark_anchor'] = float(cmean.mean())
                 y, c, fams, scores = degrade_batch(c, self.families, self.gen, tmean, a.exposure_match,
-                                                   select=select, k=a.abc_k, floor=self.floor, clean_mean=cmean)
+                                                   select=select, k=a.abc_k, floor=self.floor, clean_mean=cmean,
+                                                   dark=dark, ll=a.lowlight_op, topk=a.abc_topk)
                 if scores:
                     st['abc_d'] = sum(scores) / len(scores)
                 if self.abc_eps is not None and scores:
@@ -288,7 +319,12 @@ class TransferMethod(_OptimMethod):
             # one backward per term (gradients add up; only one graph is alive at a time)
             self.optimizer.zero_grad(set_to_none=True)
             out = self.model(y)
-            sup = self.criterion(out, c)
+            if norm:   # under-exposed: compare after matching the output's brightness to the clean image's
+                mo = out.mean(dim=(1, 2, 3), keepdim=True).clamp_min(1e-3)
+                mc = c.mean(dim=(1, 2, 3), keepdim=True).clamp_min(1e-3)
+                sup = (out * (mc / mo) - c).abs().mean()
+            else:
+                sup = self.criterion(out, c)
             sup.backward()
             loss = float(sup)
             out = out.detach()

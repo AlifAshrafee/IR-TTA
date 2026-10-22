@@ -33,7 +33,7 @@ from dctta.utils import set_seed
 from irtta.anchors import build_anchor
 from irtta.config import config_suffix, get_args
 from irtta.data import (available_names, evenly_spaced, load_registry, make_eval_dataset, resolve_bank, resolve_spec,
-                        source_sets, spec_from_dirs)
+                        source_sets, spec_from_dirs, typical_long_side)
 from irtta.evaluation import LPIPSMetric, Probe, eval_loader, evaluate_detailed, write_rows
 from irtta.methods import build_method, rng_checksum
 from irtta.regimes import StepLog, run_stream, run_transductive
@@ -122,6 +122,7 @@ def main(argv=None):
     source = args.source or infer_source(args.ckpt)
     args.target_task = spec.task
     args.bank_path = resolve_bank(args.bank, registry) if args.method == 'transfer' else None
+    args.target_long = typical_long_side(spec) if (args.method == 'transfer' and args.bank_res == 'target') else None
     run_id = make_run_id(args, spec.name, source)
     run_dir = os.path.join(args.out_root, args.exp, run_id)
     if os.path.exists(os.path.join(run_dir, 'result.json')) and not args.overwrite:

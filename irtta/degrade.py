@@ -46,6 +46,9 @@ and the clean image is whatever scene produced it:
   read off the dark image (illumination and reflectance are confounded), so it is taken from the frozen source's
   output on that target patch instead of the clean bank's arbitrary exposure. The pairs then teach what they can
   identify (noise, blur, ...) and leave the brightening level where the source puts it.
+* ``--dark_rule source``: a target patch counts as under-exposed when the frozen source brightens it by at least
+  ``--dark_ratio`` (default sqrt(2) = half a stop). The source was trained on real low-light pairs, so it knows which
+  inputs to brighten; this replaces the fixed brightness threshold, which misfiles moderately dark patches.
 * ``none``: no matching.
 
 All random numbers come from a dedicated CPU ``torch.Generator`` (the global RNG is never touched).
@@ -181,6 +184,49 @@ def op_exposure(c, g, target_mean=None):
     return (s * base).clamp(0, 1)
 
 
+def _smooth_field(H, W, g, device, dtype):
+    """Smooth random field in [-1, 1] (4x4 noise, bicubic up-sampled)."""
+    f = F.interpolate(torch.rand(1, 1, 4, 4, generator=g), size=(H, W), mode='bicubic', align_corners=False)
+    f = (f - f.amin()) / (f.amax() - f.amin()).clamp_min(1e-6)
+    return (2 * f - 1).to(device=device, dtype=dtype)
+
+
+def op_exposure_v2(c, g, target_mean=None):
+    """Under-exposure in linear light, then a camera tone curve (v2):
+
+        L = c^2.2 (sRGB -> linear) * cast * 2^(ev * field)      local exposure varies by up to +-ev stops
+        L' = s * L + sqrt(a * s * L + sigma^2) * n                photon + read noise *before* tone mapping
+        y = clip(L')^(1 / gamma_t),  gamma_t in [1.8, 2.6]        the camera's tone curve
+
+    Unlike v1 (global s * c^gamma, noise added afterwards in sRGB), the noise is shaped by the tone curve and the
+    exposure is not uniform, which is how short exposures and RAW exposure edits behave. With ``target_mean`` the
+    global exposure s is solved by bisection so the noise-free result matches the target's mean brightness."""
+    _, _, H, W = c.shape
+    ev = _u(g, 0.0, 1.0)
+    cast = torch.tensor([_u(g, 0.9, 1.1) for _ in range(3)]).view(1, 3, 1, 1).to(c)
+    base = c.clamp_min(0) ** 2.2 * cast * (2.0 ** (ev * _smooth_field(H, W, g, c.device, c.dtype)))
+    gt = _u(g, 1.8, 2.6)
+    a, sig = _u(g, 0.0, 0.01), _u(g, 0.001, 0.01)
+    n = torch.randn(c.shape, generator=g).to(c)
+
+    def tone(t):
+        return t.clamp(0, 1) ** (1.0 / gt)
+
+    if target_mean is not None:
+        lo, hi, tm = 1e-4, 1.0, float(target_mean.mean())
+        for _ in range(20):                                  # mean(tone(s * base)) is increasing in s
+            mid = (lo * hi) ** 0.5
+            if float(tone(mid * base).mean()) < tm:
+                lo = mid
+            else:
+                hi = mid
+        s = (lo * hi) ** 0.5
+    else:
+        s = 2.0 ** -_u(g, 2.0, 5.0)                         # 2 to 5 stops under
+    L = s * base
+    return tone(L + torch.sqrt(a * L.clamp_min(0) + sig ** 2) * n)
+
+
 def op_sensor_noise(c, g):
     """Sensor noise after exposure: relative to a dark signal this is strong, as in real low-light captures."""
     return _pg_noise(c, g, a=_u(g, 0.0, 0.01), sigma=_u(g, 0.002, 0.03)).clamp(0, 1)
@@ -214,7 +260,7 @@ def random_chain(g, p_scene=(1 / 3, 1 / 3, 1 / 3), p_blur=0.5, p_exposure=0.3, p
             return chain
 
 
-def _run_chain(c, chain, g, target_mean):
+def _run_chain(c, chain, g, target_mean, ll='v1'):
     y = c
     if chain['scene'] == 'rain':
         y = op_rain(y, g)
@@ -223,8 +269,8 @@ def _run_chain(c, chain, g, target_mean):
     if chain['blur']:
         y = op_blur(y, g)
     if chain['exposure']:
-        y = op_exposure(y, g, target_mean)
-    if chain['noise']:
+        y = op_exposure_v2(y, g, target_mean) if ll == 'v2' else op_exposure(y, g, target_mean)
+    if chain['noise'] and not (chain['exposure'] and ll == 'v2'):   # v2 adds its own (linear-domain) noise
         y = op_sensor_noise(y, g) if chain['exposure'] else op_noise(y, g)
     return y.clamp(0, 1)
 
@@ -237,7 +283,7 @@ def _to_mean(c, m):
     return (c * (m / _chan_mean(c))).clamp(0, 1)
 
 
-def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None, clean_mean=None):
+def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None, clean_mean=None, dark=None, ll='v1'):
     """Degrade one clean image (1,3,H,W) with ``chain`` in physical order.
 
     ``target_mean`` (1,3,1,1): the target patch's channel means, or None for no exposure matching.
@@ -245,21 +291,24 @@ def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None, clean_mea
     than ``floor`` (mean) is under-exposed: the degraded image still matches it, but the clean image keeps its
     natural exposure, so the pair becomes 'degradation + under-exposure'. ``clean_mean`` (1,3,1,1), only for such
     under-exposed targets: the clean image is brought to these channel means instead of its natural exposure (the
-    exposure the frozen source gives that target patch, --dark_anchor). Returns (degraded, clean target)."""
+    exposure the frozen source gives that target patch, --dark_anchor). ``dark`` (bool) overrides the ``floor``
+    test (e.g. the source-decided rule). ``ll``: low-light operator version ('v1' | 'v2').
+    Returns (degraded, clean target)."""
     if mode == 'camera':
         mode = 'fit' if chain['exposure'] else 'gain'
     if mode == 'gain' and target_mean is not None:
-        y = _run_chain(c, chain, g, None)
+        y = _run_chain(c, chain, g, None, ll)
         a = (target_mean / _chan_mean(y)).clamp(0.1, 10.0)
         ac = a
-        if floor is not None and float(target_mean.mean()) < floor:
+        is_dark = dark if dark is not None else (floor is not None and float(target_mean.mean()) < floor)
+        if is_dark:
             ac = torch.ones_like(a)   # under-exposed target: the clean capture keeps its natural exposure
             if clean_mean is not None:
                 return (a * y).clamp(0, 1), _to_mean(c, clean_mean)
         return (a * y).clamp(0, 1), (ac * c).clamp(0, 1)
     changes_exposure = chain['exposure'] or chain['scene'] == 'haze'
     if target_mean is None or changes_exposure:
-        y = _run_chain(c, chain, g, target_mean)
+        y = _run_chain(c, chain, g, target_mean, ll)
         return y, (c if clean_mean is None else _to_mean(c, clean_mean))
     k = (target_mean / _chan_mean(c)).clamp(0.1, 10.0)
     if mode == 'fit':
@@ -270,7 +319,7 @@ def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None, clean_mea
         state = g.get_state()
 
         def out_mean(kk):
-            y = _run_chain((kk * c).clamp(0, 1), chain, g, target_mean)
+            y = _run_chain((kk * c).clamp(0, 1), chain, g, target_mean, ll)
             g.set_state(state)
             return _chan_mean(y)
 
@@ -284,7 +333,7 @@ def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None, clean_mea
     elif mode != 'clean':
         raise ValueError(f"unknown exposure mode {mode!r}")
     c = (k * c).clamp(0, 1)
-    return _run_chain(c, chain, g, target_mean), c
+    return _run_chain(c, chain, g, target_mean, ll), c
 
 
 def parse_families(spec, task=None):
@@ -313,29 +362,33 @@ def draw_chain(families, g):
     return FAMILY_CHAINS[families[int(torch.randint(len(families), (1,), generator=g))]]
 
 
-def degrade_batch(c, families, g, target_mean=None, mode='fit', select=None, k=1, floor=None, clean_mean=None):
+def degrade_batch(c, families, g, target_mean=None, mode='fit', select=None, k=1, floor=None, clean_mean=None,
+                  dark=None, ll='v1', topk=1):
     """Degrade each image of ``c`` (B,3,H,W). ``families``: list from ``parse_families``; ``mode``: exposure
-    matching ('fit' / 'clean' / 'gain', used when ``target_mean`` is given).
+    matching ('fit' / 'clean' / 'gain' / 'camera', used when ``target_mean`` is given).
 
-    ``select`` + ``k`` > 1: draw ``k`` candidate degradations per image and keep the one with the lowest
-    ``select(degraded candidates (k,3,H,W)) -> (k,)`` score (ABC selection, irtta/nss.py).
-    Returns (degraded, clean targets, labels, chosen scores or None)."""
+    ``select`` + ``k`` > 1: draw ``k`` candidate degradations per image and keep the ``topk`` with the lowest
+    ``select(degraded candidates (k,3,H,W)) -> (k,)`` score (ABC selection, irtta/nss.py); the batch then holds
+    B * topk pairs. Returns (degraded, clean targets, labels, chosen scores or None)."""
     ys, cs, used, scores = [], [], [], []
     for i in range(c.shape[0]):
         if select is None or k <= 1:
             chain = draw_chain(families, g)
-            y, ci = apply_chain(c[i:i + 1], chain, g, target_mean, mode, floor, clean_mean)
-        else:
-            cand = []
-            for _ in range(k):
-                ch = draw_chain(families, g)
-                yk, ck = apply_chain(c[i:i + 1], ch, g, target_mean, mode, floor, clean_mean)
-                cand.append((ch, yk, ck))
-            sc = select(torch.cat([t[1] for t in cand], 0))
-            j = int(torch.argmin(sc))
+            y, ci = apply_chain(c[i:i + 1], chain, g, target_mean, mode, floor, clean_mean, dark, ll)
+            ys.append(y)
+            cs.append(ci)
+            used.append(chain_label(chain))
+            continue
+        cand = []
+        for _ in range(k):
+            ch = draw_chain(families, g)
+            yk, ck = apply_chain(c[i:i + 1], ch, g, target_mean, mode, floor, clean_mean, dark, ll)
+            cand.append((ch, yk, ck))
+        sc = select(torch.cat([t[1] for t in cand], 0))
+        for j in torch.argsort(sc)[:max(1, topk)].tolist():
             chain, y, ci = cand[j]
+            ys.append(y)
+            cs.append(ci)
+            used.append(chain_label(chain))
             scores.append(float(sc[j]))
-        ys.append(y)
-        cs.append(ci)
-        used.append(chain_label(chain))
     return torch.cat(ys, 0), torch.cat(cs, 0), used, (scores or None)

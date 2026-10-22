@@ -129,6 +129,17 @@ def available_names(spec: DataSpec) -> List[str]:
     return [n for n in list_images(spec.lq) if n in gt]
 
 
+def typical_long_side(spec, n=64):
+    """Median longer side (pixels, after the registry's ``max_side``) of up to ``n`` evenly spaced target images."""
+    names = evenly_spaced(available_names(spec), n)
+    folder = spec.lq if spec.lq is not None else spec.gt
+    sides = []
+    for nm in names:
+        with Image.open(os.path.join(folder, nm)) as im:
+            sides.append(max(im.size) if not spec.max_side else min(max(im.size), spec.max_side))
+    return int(np.median(sides)) if sides else None
+
+
 def make_eval_dataset(spec: DataSpec, base=16, names=None, max_images=None):
     """Full-image (name, lq, gt) dataset; ``max_images`` takes an evenly spaced deterministic subset."""
     if names is None and max_images:
@@ -181,7 +192,10 @@ class CleanBank:
     shorter side is below ``min_side`` are skipped. Crops use a caller-supplied CPU ``torch.Generator``.
     """
 
-    def __init__(self, root, max_images=300, min_side=192):
+    def __init__(self, root, max_images=300, min_side=192, long_side=None):
+        """``long_side``: resize every image (anti-aliased bicubic, never up) so its longer side is about this many
+        pixels -- the target images' typical size, so a crop covers a similar field of view as a target patch and
+        the operators' kernel / streak sizes keep their scale relative to the content."""
         paths = []
         for dirpath, _, files in os.walk(root):
             paths += [os.path.join(dirpath, f) for f in files if f.lower().endswith(IMG_EXTS)]
@@ -191,12 +205,18 @@ class CleanBank:
                              f"to your DIV2K_train_HR folder, or pass --bank)")
         self.images = []
         for p in evenly_spaced(paths, max_images if max_images and max_images > 0 else len(paths)):
-            img = np.array(Image.open(p).convert('RGB'))
+            im = Image.open(p).convert('RGB')
+            if long_side:
+                f = long_side / max(im.size)
+                if f < 1:
+                    im = im.resize((max(1, round(im.size[0] * f)), max(1, round(im.size[1] * f))), Image.BICUBIC)
+            img = np.array(im)
             if min(img.shape[:2]) >= min_side:
                 self.images.append(img)
         if not self.images:
             raise ValueError(f"no image in {root} has a shorter side >= {min_side}")
         self.root = root
+        self.long_side = long_side
 
     def __len__(self):
         return len(self.images)

@@ -182,6 +182,20 @@ def test_degradations():
     for ch in (rain, D.FAMILY_CHAINS['lowlight']):
         y, cc = D.apply_chain(c1, ch, g, dark, 'camera', floor=0.2, clean_mean=anchor_m)
         assert torch.allclose(cc.mean(dim=(2, 3), keepdim=True), anchor_m, atol=0.02), D.chain_label(ch)
+    # v2 low-light: darkens, matches the target brightness, adds its own noise (no extra sensor-noise pass)
+    ll = D.FAMILY_CHAINS['lowlight']
+    y2, c2 = D.apply_chain(c1, ll, g, dark, 'camera', ll='v2')
+    assert torch.equal(c2, c1) and abs(float(y2.mean()) - float(dark.mean())) < 0.03 and float(y2.std()) > 0
+    # dark override: dark=True behaves like a floor hit, dark=False like a bright target
+    st = g.get_state()
+    yo, co = D.apply_chain(c1, rain, g, tm, 'camera', dark=True)
+    assert torch.equal(co, c1)
+    g.set_state(st)
+    yf, cfl = D.apply_chain(c1, rain, g, dark, 'camera', dark=False)
+    assert float(cfl.mean()) < 0.2
+    # top-k ABC: k pairs per crop
+    out = D.degrade_batch(c[:2], ['compose'], g, None, 'fit', select=lambda t: -t.mean(dim=(1, 2, 3)), k=5, topk=2)
+    assert out[0].shape[0] == 4 and len(out[2]) == 4 and out[3][0] <= out[3][1]
     # ABC: with a selector the lowest-scoring candidate is kept
     picks = D.degrade_batch(c[:2], ['compose'], g, None, 'fit', select=lambda t: -t.mean(dim=(1, 2, 3)), k=6)
     assert len(picks[3]) == 2 and picks[0].shape == c[:2].shape
@@ -340,6 +354,15 @@ def test_end_to_end():
                   '--target', 'Tiny', '--max_steps', '3', '--bank_patch', '64', '--bank_batch', '2', '--log_stats',
                   '--tag', 'rej'])
     assert r_rej['steps'] + r_rej['skipped'] == 3, (r_rej['steps'], r_rej['skipped'])
+    # new dark path: source rule (+ every action), v2 low-light, resolution-matched bank, top-2 ABC
+    for act in ('skip', 'anchor', 'norm'):
+        r_n = _run(['--method', 'transfer', '--families', 'all', '--exposure_match', 'camera', '--dark_rule', 'source',
+                    '--dark_ratio', '0.5', '--dark_action', act, '--lowlight_op', 'v2', '--bank_res', 'target',
+                    '--abc_k', '3', '--abc_topk', '2', '--abc_fit_n', '8', '--nss_color', '--target', 'Tiny',
+                    '--max_steps', '2', '--bank_patch', '64', '--bank_batch', '2', '--log_stats', '--tag', f'n{act}'])
+        st_n = [json.loads(l) for l in open(os.path.join(t['dir'], 'results', 'test', r_n['run_id'], 'stats.jsonl'))]
+        assert all(s_.get('dark') == 1 for s_ in st_n), st_n          # ratio 0.5: every patch counts as dark
+        assert (r_n['skipped'] == 2) if act == 'skip' else (r_n['steps'] == 2), (act, r_n['steps'], r_n['skipped'])
     # dark skip: the Tiny target patches are darker than the bank's 0.99 quantile -> every step abstains
     r_dk = _run(['--method', 'transfer', '--families', 'all', '--exposure_match', 'camera', '--dark_q', '0.99',
                  '--dark_skip', '--target', 'Tiny', '--max_steps', '3', '--bank_patch', '64', '--bank_batch', '2',
