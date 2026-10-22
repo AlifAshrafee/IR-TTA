@@ -41,6 +41,7 @@ TESTS = {
 }
 # LOLv2-Real (test and train) is out: its scenes are LOL-v1 training scenes (tools/overlap_check.py)
 VALS = {'3task': ['Rain100H_val'], '5task': ['Rain100H_val', 'HIDE_val', 'LOLv2_Syn_val']}
+OPEN_TESTS, OPEN_VALS = ['HIDE', 'LOLv2_Syn'], ['HIDE_val', 'LOLv2_Syn_val']   # open set: 3-task model, new families
 SHORT = {'Rain100H': 'Rain100H', 'SOTS_Indoor': 'SOTS-In', 'DenseHaze': 'DenseHaze', 'OHAZY': 'O-HAZY*',
          'Kodak24_Poisson': 'Kodak', 'HIDE': 'HIDE', 'LOLv2': 'LOLv2', 'LOLv2_Syn': 'LOLv2-S',
          'Rain100H_val': 'Rain val', 'HIDE_val': 'HIDE val', 'LOLv2_val': 'LOLv2 val', 'LOLv2_Syn_val': 'LOLv2-S val'}
@@ -103,8 +104,8 @@ def _rows_for(summary_rows, setting, backbone, cols):
     return out
 
 
-def build(summary_rows, setting, backbone):
-    cols = TESTS[setting] + [v for v in VALS[setting] if v not in TESTS[setting]]
+def build(summary_rows, setting, backbone, cols=None):
+    cols = cols or (TESTS[setting] + [v for v in VALS[setting] if v not in TESTS[setting]])
     table = OrderedDict()   # label -> {target: (mean, std, n)}
     for r in _rows_for(summary_rows, setting, backbone, cols):
         lbl = label(r)
@@ -133,8 +134,8 @@ def _avg(cell, tests):
     return f"{sum(tv) / len(tv):.2f}" if len(tv) == len(tests) else ''
 
 
-def render(cols, rows, setting):
-    tests = TESTS[setting]
+def render(cols, rows, setting, tests=None):
+    tests = tests or TESTS[setting]
     best = {}
     for c in cols:
         vals = [cell[c][0] for lbl, cell in rows if c in cell and cell[c][0] is not None and not _is_input(lbl)]
@@ -212,6 +213,23 @@ def main():
                 f.write(md + '\n')
             print(md + '\n')
             print(f"-> {path}\n")
+    # open-set: 3-task sources (never trained on blur / low-light) on the 5-task-only families
+    for bb in NAMES:
+        cols, rows = build(summary, '3task', bb, cols=OPEN_TESTS + OPEN_VALS)
+        if not any(lbl == 'Source' for lbl, _ in rows):
+            continue
+        ref = [r for r in _rows_for(summary, '5task', bb, OPEN_TESTS + OPEN_VALS) if r['method'] == 'source']
+        if ref:
+            rows.append(('Reference: 5-task source (trained on blur, low-light)',
+                         {r['target']: value(r)[:2] + (1,) for r in ref}))
+        md = (f"## {NAMES[bb]} 3-task source on unseen families (open set) -- PSNR (dB)\n\n"
+              f"The 3-task model never saw blur or low-light; the reference row is the same backbone trained on "
+              f"them (5-task).\n\n" + render(cols, rows, '3task', tests=OPEN_TESTS))
+        path = os.path.join(args.root, f'table_open_{bb}.md')
+        with open(path, 'w') as f:
+            f.write(md + '\n')
+        print(md + '\n')
+        print(f"-> {path}\n")
     md = (f"## Across backbones -- Avg test PSNR (dB)\n\nOurs = tag '{args.tag}', families {args.families}, "
           f"exposure match {args.exposure_match}.\n\n" + summary_table(summary, args))
     path = os.path.join(args.root, 'table_backbones.md')

@@ -73,8 +73,10 @@ def get_parser():
                         'threshold (mean < --dark_q quantile of the clean bank) | source (the frozen source '
                         'brightens the patch by >= --dark_ratio)')
     g.add_argument('--dark_ratio', type=float, default=1.414, help='--dark_rule source: brightening factor (sqrt 2)')
-    g.add_argument('--dark_action', type=str, default='skip', choices=['skip', 'anchor', 'norm'],
-                   help='what --dark_rule does with an under-exposed patch (see TransferMethod)')
+    g.add_argument('--dark_action', type=str, default='skip', choices=['skip', 'anchor', 'norm', 'natural'],
+                   help='what --dark_rule does with an under-exposed patch (see TransferMethod); natural: clean '
+                        'images keep their natural exposure, plain L1 (teaches brightening; for sources that '
+                        'never learned low-light)')
     g.add_argument('--lowlight_op', type=str, default='v1', choices=['v1', 'v2'],
                    help='low-light operator: v1 global gain + gamma | v2 linear-light exposure field, noise before '
                         'a random tone curve (irtta/degrade.py)')

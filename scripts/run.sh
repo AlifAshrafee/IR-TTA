@@ -19,6 +19,8 @@
 #   ours_dark  A9 = A8 + --dark_skip on the 5-task low-light sets (LOLv2_Syn, LOLv2_Syn_val)
 #   ours_e E1-E5 (source-decided dark rule, brightness-free loss, v2 low-light, bank scale, top-2 ABC),
 #          5-task validation sets; ECFGS / ESETS select
+#   open3  open set: 3-task sources on HIDE / LOLv2-Synthetic (O1 = all five families, threshold dark rule,
+#          natural-exposure clean images, v2 low-light) + input / source / x2 / DCTTA; table_open_<bb>.md
 #   ours   A8 on the suite for $BBS x $SETTINGS (ONLYTEST=1 skips the *_val sets)
 #   tta_a  loss study A, PromptIR 5-task validation sets ($TSETS): which pair signal (v0.2 'all', v0 'gain' on rain,
 #          ABC-selected pairs) moves the model; + source/input rows in results/tta
@@ -219,6 +221,25 @@ stage_ours_e() {
     for E in $ECFGS; do for T in $ESETS; do
       run --method transfer $M --target $T $(size_args $T) --max_steps 500 --eval_alphas 0.5 1.0 --tag $E $(ecfg $E)
     done; done
+  done
+}
+
+# Open set (TAO-style): 3-task sources (no blur / low-light training) on HIDE and LOLv2-Synthetic, operators from
+# all five families. Validation sets first (OSETS); add the tests with OSETS="HIDE LOLv2_Syn HIDE_val LOLv2_Syn_val".
+OSETS=${OSETS:-"HIDE_val LOLv2_Syn_val"}
+stage_open3() {
+  local B M T
+  for B in $BBS; do
+    M=$(model_args $B 3task) || continue
+    for T in $OSETS; do
+      if [[ $B == promptir ]]; then run --method identity $M --target $T $(size_args $T); fi
+      run --method source $M --target $T $(size_args $T)
+      run --method flow --n_apply 2 $M --target $T $(size_args $T)
+      run --method transfer $M --target $T $(size_args $T) --max_steps 500 --eval_alphas 0.5 1.0 --tag O1 \
+          --families all --abc_k 8 --exposure_match camera --nss_color \
+          --dark_rule threshold --dark_q 0.05 --dark_action natural --lowlight_op v2
+      if [[ $B == promptir ]]; then run --method dctta $M --target $T $(size_args $T); fi
+    done
   done
 }
 

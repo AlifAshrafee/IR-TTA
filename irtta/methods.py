@@ -170,7 +170,8 @@ class TransferMethod(_OptimMethod):
     Under-exposed target patches (``--dark_rule threshold|source``) get ``--dark_action``: ``skip`` (no update),
     ``anchor`` (clean images take the source's output brightness) or ``norm`` (clean images keep their natural
     exposure and the pair loss ignores overall brightness: L1(f(y) * mean(c) / mean(f(y)), c), so the pairs teach
-    noise / colour / detail and the brightening level stays where the source puts it).
+    noise / colour / detail and the brightening level stays where the source puts it) or ``natural`` (clean images
+    keep their natural exposure, plain L1: the pairs teach brightening -- for a source that never saw low-light).
     """
     name = 'transfer'
 
