@@ -132,7 +132,50 @@ def _pg_noise(y, g, a, sigma):
     return y + torch.sqrt(a * y.clamp_min(0) + sigma ** 2) * n
 
 
-def op_blur(c, g):
+def motion_kernel(g, length=None):
+    """Linear camera/object motion with optional sinusoidal curvature (the RwF / BMVC'25 kernel):
+    trajectory length L ~ U(11, 41) px at angle ~ U(0, 360) deg, perpendicular sine perturbation of amplitude
+    0.25 * curvature * L (curvature ~ U(0, 0.6)), rasterised with bilinear sub-pixel deposition, sum 1."""
+    L = _u(g, 11.0, 41.0) if length is None else float(length)
+    ang = math.radians(_u(g, 0.0, 360.0))
+    curv = _u(g, 0.0, 0.6)
+    phase, freq = _u(g, 0.0, 2 * math.pi), _u(g, 0.5, 2.0)
+    n = max(int(L * 10), 200)
+    s = torch.linspace(-0.5, 0.5, n, dtype=torch.float64)
+    xs, ys = L * s * math.cos(ang), L * s * math.sin(ang)
+    pert = curv * L * torch.sin(2 * math.pi * freq * s + phase) * 0.25
+    xs, ys = xs - math.sin(ang) * pert, ys + math.cos(ang) * pert
+    xs, ys = xs - xs.mean(), ys - ys.mean()
+    size = 2 * int(L * math.sqrt(1.0 + (curv * 0.25) ** 2) / 2 + 3) + 1
+    c0 = size // 2
+    xp, yp = xs + c0, ys + c0
+    x0, y0 = xp.floor().long(), yp.floor().long()
+    fx, fy = xp - x0, yp - y0
+    k = torch.zeros(size * size, dtype=torch.float64)
+    for dx, dy, w in ((0, 0, (1 - fx) * (1 - fy)), (1, 0, fx * (1 - fy)), (0, 1, (1 - fx) * fy), (1, 1, fx * fy)):
+        xi, yi = x0 + dx, y0 + dy
+        ok = (xi >= 0) & (xi < size) & (yi >= 0) & (yi < size)
+        k.index_add_(0, (yi[ok] * size + xi[ok]), w[ok])
+    k = k.view(size, size).float()
+    return k / k.sum().clamp_min(1e-8)
+
+
+def op_blur(c, g, kind='v1'):
+    """kind: v1 = Gaussian or random-walk shake (50/50) | motion = long linear/curved motion only |
+    mixed = Gaussian / shake / motion, 1/3 each."""
+    if kind == 'motion':
+        return conv_same(c, motion_kernel(g)).clamp(0, 1)
+    if kind == 'mixed':
+        r = float(torch.rand(1, generator=g))
+        if r < 1 / 3:
+            return conv_same(c, gaussian_kernel(KSIZE, _u(g, 0.5, 4.0), _u(g, 0.5, 4.0), _u(g, 0, math.pi))).clamp(0, 1)
+        if r < 2 / 3:
+            return conv_same(c, shake_kernel(KSIZE, g)).clamp(0, 1)
+        return conv_same(c, motion_kernel(g)).clamp(0, 1)
+    return _op_blur_v1(c, g)
+
+
+def _op_blur_v1(c, g):
     return conv_same(c, random_blur_kernel(g)).clamp(0, 1)
 
 
@@ -260,14 +303,14 @@ def random_chain(g, p_scene=(1 / 3, 1 / 3, 1 / 3), p_blur=0.5, p_exposure=0.3, p
             return chain
 
 
-def _run_chain(c, chain, g, target_mean, ll='v1'):
+def _run_chain(c, chain, g, target_mean, ll='v1', blur='v1'):
     y = c
     if chain['scene'] == 'rain':
         y = op_rain(y, g)
     elif chain['scene'] == 'haze':
         y = op_haze(y, g, target_mean if not chain['exposure'] else None)
     if chain['blur']:
-        y = op_blur(y, g)
+        y = op_blur(y, g, blur)
     if chain['exposure']:
         y = op_exposure_v2(y, g, target_mean) if ll == 'v2' else op_exposure(y, g, target_mean)
     if chain['noise'] and not (chain['exposure'] and ll == 'v2'):   # v2 adds its own (linear-domain) noise
@@ -283,7 +326,8 @@ def _to_mean(c, m):
     return (c * (m / _chan_mean(c))).clamp(0, 1)
 
 
-def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None, clean_mean=None, dark=None, ll='v1'):
+def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None, clean_mean=None, dark=None, ll='v1',
+                blur='v1'):
     """Degrade one clean image (1,3,H,W) with ``chain`` in physical order.
 
     ``target_mean`` (1,3,1,1): the target patch's channel means, or None for no exposure matching.
@@ -297,7 +341,7 @@ def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None, clean_mea
     if mode == 'camera':
         mode = 'fit' if chain['exposure'] else 'gain'
     if mode == 'gain' and target_mean is not None:
-        y = _run_chain(c, chain, g, None, ll)
+        y = _run_chain(c, chain, g, None, ll, blur)
         a = (target_mean / _chan_mean(y)).clamp(0.1, 10.0)
         ac = a
         is_dark = dark if dark is not None else (floor is not None and float(target_mean.mean()) < floor)
@@ -308,7 +352,7 @@ def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None, clean_mea
         return (a * y).clamp(0, 1), (ac * c).clamp(0, 1)
     changes_exposure = chain['exposure'] or chain['scene'] == 'haze'
     if target_mean is None or changes_exposure:
-        y = _run_chain(c, chain, g, target_mean, ll)
+        y = _run_chain(c, chain, g, target_mean, ll, blur)
         return y, (c if clean_mean is None else _to_mean(c, clean_mean))
     k = (target_mean / _chan_mean(c)).clamp(0.1, 10.0)
     if mode == 'fit':
@@ -319,7 +363,7 @@ def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None, clean_mea
         state = g.get_state()
 
         def out_mean(kk):
-            y = _run_chain((kk * c).clamp(0, 1), chain, g, target_mean, ll)
+            y = _run_chain((kk * c).clamp(0, 1), chain, g, target_mean, ll, blur)
             g.set_state(state)
             return _chan_mean(y)
 
@@ -333,7 +377,7 @@ def apply_chain(c, chain, g, target_mean=None, mode='fit', floor=None, clean_mea
     elif mode != 'clean':
         raise ValueError(f"unknown exposure mode {mode!r}")
     c = (k * c).clamp(0, 1)
-    return _run_chain(c, chain, g, target_mean, ll), c
+    return _run_chain(c, chain, g, target_mean, ll, blur), c
 
 
 def parse_families(spec, task=None):
@@ -363,7 +407,7 @@ def draw_chain(families, g):
 
 
 def degrade_batch(c, families, g, target_mean=None, mode='fit', select=None, k=1, floor=None, clean_mean=None,
-                  dark=None, ll='v1', topk=1):
+                  dark=None, ll='v1', topk=1, blur='v1'):
     """Degrade each image of ``c`` (B,3,H,W). ``families``: list from ``parse_families``; ``mode``: exposure
     matching ('fit' / 'clean' / 'gain' / 'camera', used when ``target_mean`` is given).
 
@@ -374,7 +418,7 @@ def degrade_batch(c, families, g, target_mean=None, mode='fit', select=None, k=1
     for i in range(c.shape[0]):
         if select is None or k <= 1:
             chain = draw_chain(families, g)
-            y, ci = apply_chain(c[i:i + 1], chain, g, target_mean, mode, floor, clean_mean, dark, ll)
+            y, ci = apply_chain(c[i:i + 1], chain, g, target_mean, mode, floor, clean_mean, dark, ll, blur)
             ys.append(y)
             cs.append(ci)
             used.append(chain_label(chain))
@@ -382,7 +426,7 @@ def degrade_batch(c, families, g, target_mean=None, mode='fit', select=None, k=1
         cand = []
         for _ in range(k):
             ch = draw_chain(families, g)
-            yk, ck = apply_chain(c[i:i + 1], ch, g, target_mean, mode, floor, clean_mean, dark, ll)
+            yk, ck = apply_chain(c[i:i + 1], ch, g, target_mean, mode, floor, clean_mean, dark, ll, blur)
             cand.append((ch, yk, ck))
         sc = select(torch.cat([t[1] for t in cand], 0))
         for j in torch.argsort(sc)[:max(1, topk)].tolist():

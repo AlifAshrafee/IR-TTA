@@ -297,7 +297,7 @@ class TransferMethod(_OptimMethod):
                     st['dark_anchor'] = float(cmean.mean())
                 y, c, fams, scores = degrade_batch(c, self.families, self.gen, tmean, a.exposure_match,
                                                    select=select, k=a.abc_k, floor=self.floor, clean_mean=cmean,
-                                                   dark=dark, ll=a.lowlight_op, topk=a.abc_topk)
+                                                   dark=dark, ll=a.lowlight_op, topk=a.abc_topk, blur=a.blur_op)
                 if scores:
                     st['abc_d'] = sum(scores) / len(scores)
                 if self.abc_eps is not None and scores:

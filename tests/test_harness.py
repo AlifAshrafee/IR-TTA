@@ -193,6 +193,12 @@ def test_degradations():
     g.set_state(st)
     yf, cfl = D.apply_chain(c1, rain, g, dark, 'camera', dark=False)
     assert float(cfl.mean()) < 0.2
+    # motion kernels: non-negative, sum 1, long; every blur kind keeps a flat image flat
+    for _ in range(10):
+        k = D.motion_kernel(g)
+        assert float(k.min()) >= 0 and abs(float(k.sum()) - 1) < 1e-4 and k.shape[0] >= 13
+    for kind in ('v1', 'motion', 'mixed'):
+        assert torch.allclose(D.op_blur(flat, g, kind), flat, atol=1e-4), kind
     # top-k ABC: k pairs per crop
     out = D.degrade_batch(c[:2], ['compose'], g, None, 'fit', select=lambda t: -t.mean(dim=(1, 2, 3)), k=5, topk=2)
     assert out[0].shape[0] == 4 and len(out[2]) == 4 and out[3][0] <= out[3][1]

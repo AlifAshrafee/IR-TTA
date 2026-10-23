@@ -80,6 +80,8 @@ def get_parser():
     g.add_argument('--lowlight_op', type=str, default='v1', choices=['v1', 'v2'],
                    help='low-light operator: v1 global gain + gamma | v2 linear-light exposure field, noise before '
                         'a random tone curve (irtta/degrade.py)')
+    g.add_argument('--blur_op', type=str, default='v1', choices=['v1', 'motion', 'mixed'],
+                   help='blur kernels: v1 Gaussian/shake | motion long linear+curved motion (11-41 px, RwF) | mixed')
     g.add_argument('--bank_res', type=str, default='native', choices=['native', 'target'],
                    help='target: resize clean images to the target images\' typical long side before cropping')
     g.add_argument('--abc_topk', type=int, default=1, help='ABC: keep the k closest of --abc_k candidates per crop')
@@ -185,7 +187,7 @@ def get_args(argv=None):
 # (method, subset, anchor+lambda, regime, target, source, lr, seeds, tag are).
 SEMANTIC_ARGS = OrderedDict([
     ('families', 'fam'), ('bank', 'bk'), ('bank_max', 'bm'), ('bank_patch', 'bp'), ('bank_batch', 'bb'),
-    ('exposure_match', 'em'), ('dark_q', 'dq'), ('dark_anchor', 'da'), ('dark_skip', 'dsk'), ('dark_rule', 'drl'), ('dark_ratio', 'drr'), ('dark_action', 'dac'), ('lowlight_op', 'llo'), ('bank_res', 'bres'), ('abc_topk', 'abt'), ('nss_color', 'nc'), ('abc_k', 'abc'), ('abc_eps_q', 'abq'), ('abc_fit_n', 'abn'), ('cons_weight', 'cw'), ('cons_band', 'cbd'),
+    ('exposure_match', 'em'), ('dark_q', 'dq'), ('dark_anchor', 'da'), ('dark_skip', 'dsk'), ('dark_rule', 'drl'), ('dark_ratio', 'drr'), ('dark_action', 'dac'), ('lowlight_op', 'llo'), ('blur_op', 'blo'), ('bank_res', 'bres'), ('abc_topk', 'abt'), ('nss_color', 'nc'), ('abc_k', 'abc'), ('abc_eps_q', 'abq'), ('abc_fit_n', 'abn'), ('cons_weight', 'cw'), ('cons_band', 'cbd'),
     ('redeg_weight', 'rw'), ('nss_weight', 'nw'), ('ext_alpha', 'ea'), ('n_apply', 'na'), ('ema_decay', 'ema'),
     ('iterations', 'it'), ('pixel_weight', 'pix'), ('perceptual_weight', 'vgg'), ('lowpass_weight', 'lp'),
     ('teacher_weight', 'tw'), ('beta1', 'b1'), ('beta2', 'b2'),
@@ -195,7 +197,7 @@ SEMANTIC_ARGS = OrderedDict([
     ('steps_per_image', 'spi'), ('patches_per_step', 'pps'), ('stream_order', 'so'), ('online_predict', 'op'),
     ('max_images', 'mi'), ('crop_base', 'cb'), ('backbone_opts', 'bo'),
 ])
-_TRANSFER_ARGS = ('families', 'bank', 'bank_max', 'bank_patch', 'bank_batch', 'exposure_match', 'dark_q', 'dark_anchor', 'dark_skip', 'dark_rule', 'dark_ratio', 'dark_action', 'lowlight_op', 'bank_res', 'abc_topk', 'nss_color', 'abc_k', 'abc_eps_q',
+_TRANSFER_ARGS = ('families', 'bank', 'bank_max', 'bank_patch', 'bank_batch', 'exposure_match', 'dark_q', 'dark_anchor', 'dark_skip', 'dark_rule', 'dark_ratio', 'dark_action', 'lowlight_op', 'blur_op', 'bank_res', 'abc_topk', 'nss_color', 'abc_k', 'abc_eps_q',
                   'abc_fit_n',
                   'cons_weight', 'cons_band', 'redeg_weight', 'nss_weight')
 _FLOW_ARGS = ('ext_alpha', 'n_apply')

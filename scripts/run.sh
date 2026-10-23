@@ -17,10 +17,11 @@
 #          report: results/probe/probe_<setting>.md
 #   ref    source only, HIDE, all six 5-task backbones (the co-author's reference table has no HIDE column)
 #   ours_dark  A9 = A8 + --dark_skip on the 5-task low-light sets (LOLv2_Syn, LOLv2_Syn_val)
-#   ours_e E1-E5 (source-decided dark rule, brightness-free loss, v2 low-light, bank scale, top-2 ABC),
+#   ours_e E1-E6 (E6 = E4 + motion-blur kernels; source-decided dark rule, brightness-free loss, v2 low-light, bank scale, top-2 ABC),
 #          5-task validation sets; ECFGS / ESETS select
 #   open3  open set: 3-task sources on HIDE / LOLv2-Synthetic (O1 = all five families, threshold dark rule,
-#          natural-exposure clean images, v2 low-light) + input / source / x2 / DCTTA; table_open_<bb>.md
+#          natural-exposure clean images, v2 low-light; O2 = O1 + bank scale + motion-blur kernels)
+#          + input / source / x2 / DCTTA; table_open_<bb>.md
 #   ours   A8 on the suite for $BBS x $SETTINGS (ONLYTEST=1 skips the *_val sets)
 #   tta_a  loss study A, PromptIR 5-task validation sets ($TSETS): which pair signal (v0.2 'all', v0 'gain' on rain,
 #          ABC-selected pairs) moves the model; + source/input rows in results/tta
@@ -212,6 +213,7 @@ ecfg() {
     E3) echo "$core --dark_rule source --dark_action norm --lowlight_op v2" ;;        # + v2 low-light operator
     E4) echo "$core --dark_rule source --dark_action norm --lowlight_op v2 --bank_res target" ;;      # + bank scale
     E5) echo "$core --dark_rule source --dark_action norm --lowlight_op v2 --bank_res target --abc_topk 2" ;;
+    E6) echo "$core --dark_rule source --dark_action norm --lowlight_op v2 --bank_res target --blur_op mixed" ;;  # E4 + motion kernels
   esac
 }
 stage_ours_e() {
@@ -238,6 +240,9 @@ stage_open3() {
       run --method transfer $M --target $T $(size_args $T) --max_steps 500 --eval_alphas 0.5 1.0 --tag O1 \
           --families all --abc_k 8 --exposure_match camera --nss_color \
           --dark_rule threshold --dark_q 0.05 --dark_action natural --lowlight_op v2
+      run --method transfer $M --target $T $(size_args $T) --max_steps 500 --eval_alphas 0.5 1.0 --tag O2 \
+          --families all --abc_k 8 --exposure_match camera --nss_color \
+          --dark_rule threshold --dark_q 0.05 --dark_action natural --lowlight_op v2 --bank_res target --blur_op mixed
       if [[ $B == promptir ]]; then run --method dctta $M --target $T $(size_args $T); fi
     done
   done
