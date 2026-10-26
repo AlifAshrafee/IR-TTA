@@ -122,7 +122,10 @@ def main(argv=None):
     source = args.source or infer_source(args.ckpt)
     args.target_task = spec.task
     args.bank_path = resolve_bank(args.bank, registry) if args.method == 'transfer' else None
-    args.target_long = typical_long_side(spec) if (args.method == 'transfer' and args.bank_res == 'target') else None
+    # --cond_target: adapt on (= condition the synthesis on) ANOTHER set's images, evaluate on the target (a control:
+    # if the gain comes from inferring the target's degradations, it must vanish when conditioned on the wrong set)
+    cspec = resolve_spec(args.cond_target, registry) if args.cond_target else spec
+    args.target_long = typical_long_side(cspec) if (args.method == 'transfer' and args.bank_res == 'target') else None
     run_id = make_run_id(args, spec.name, source)
     run_dir = os.path.join(args.out_root, args.exp, run_id)
     if os.path.exists(os.path.join(run_dir, 'result.json')) and not args.overwrite:
@@ -148,16 +151,31 @@ def main(argv=None):
 
     loader = None
     if args.regime == 'transductive' and adapts:
-        if spec.synthetic:
-            raise SystemExit(f"{spec.name} has no LQ folder; transductive adaptation needs stored LQ images")
-        trainset = AdaptationPatchDataset(spec.lq, spec.gt, patch_size=args.patch_size,
+        if cspec.synthetic:
+            raise SystemExit(f"{cspec.name} has no LQ folder; transductive adaptation needs stored LQ images")
+        trainset = AdaptationPatchDataset(cspec.lq, cspec.gt, patch_size=args.patch_size,
                                           seed=None if args.dataset_seed < 0 else args.dataset_seed,
-                                          max_side=spec.max_side, names=subset_names)
+                                          max_side=cspec.max_side, names=subset_names if cspec is spec else None)
         loader = DataLoader(trainset, batch_size=args.batch_size, pin_memory=True, shuffle=True, drop_last=True,
                             num_workers=args.num_workers)
         logger.info(f"target set: {len(loader)} patches per epoch")
 
     model = build_model(args.backbone, args.ckpt, logger, **parse_backbone_opts(args.backbone_opts))
+    if args.init == 'scratch':   # control: same architecture, random weights (no source knowledge)
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(args.seed + 11)
+            for m in model.modules():
+                if hasattr(m, 'reset_parameters'):
+                    m.reset_parameters()
+                else:   # raw parameters (custom LayerNorms, attention temperatures, PromptIR's prompt bank)
+                    for n, p in m.named_parameters(recurse=False):
+                        if p.dim() == 1:
+                            p.data.fill_(1.0 if ('weight' in n or 'temperature' in n) else 0.0)
+                        elif 'temperature' in n:
+                            p.data.fill_(1.0)
+                        else:
+                            p.data.uniform_(0.0, 1.0)   # PromptIR initialises its prompts with torch.rand
+        logger.info("--init scratch: every layer re-initialised; the source checkpoint is not used")
     model = model.to(device)
     n_total = sum(p.numel() for p in model.parameters())
 

@@ -13,6 +13,8 @@ def get_parser():
     p = argparse.ArgumentParser(description="IR-TTA harness: method x subset x anchor x regime")
     g = p.add_argument_group('data')
     g.add_argument('--target', type=str, default=None, help='dataset name in the registry (configs/datasets.json)')
+    g.add_argument('--cond_target', type=str, default=None,
+                   help='control: adapt on this registry set\'s images, evaluate on --target (mismatched conditioning)')
     g.add_argument('--lq_dir', type=str, default=None, help='... or explicit LQ/GT folders')
     g.add_argument('--gt_dir', type=str, default=None)
     g.add_argument('--registry', type=str, default=DEFAULT_REGISTRY)
@@ -23,6 +25,8 @@ def get_parser():
 
     g = p.add_argument_group('source model')
     g.add_argument('--ckpt', type=str, required=True)
+    g.add_argument('--init', type=str, default='source', choices=['source', 'scratch'],
+                   help='control: scratch = same architecture with random weights (use --subset all)')
     g.add_argument('--backbone', type=str, default='promptir', choices=list(BACKBONES),
                    help='source all-in-one model (dctta/models/__init__.py); --ckpt is its released checkpoint')
     g.add_argument('--backbone_opts', type=str, nargs='*', default=[],
@@ -195,7 +199,7 @@ SEMANTIC_ARGS = OrderedDict([
     ('gen_train_steps', 'gts'), ('gen_sampling_steps', 'gss'), ('gen_lr', 'glr'), ('gen_sum_scale', 'gsc'),
     ('patch_size', 'ps'), ('batch_size', 'bs'), ('epochs', 'ep'), ('max_steps', 'ms'),
     ('steps_per_image', 'spi'), ('patches_per_step', 'pps'), ('stream_order', 'so'), ('online_predict', 'op'),
-    ('max_images', 'mi'), ('crop_base', 'cb'), ('backbone_opts', 'bo'),
+    ('max_images', 'mi'), ('crop_base', 'cb'), ('backbone_opts', 'bo'), ('cond_target', 'ct'), ('init', 'ini'),
 ])
 _TRANSFER_ARGS = ('families', 'bank', 'bank_max', 'bank_patch', 'bank_batch', 'exposure_match', 'dark_q', 'dark_anchor', 'dark_skip', 'dark_rule', 'dark_ratio', 'dark_action', 'lowlight_op', 'blur_op', 'bank_res', 'abc_topk', 'nss_color', 'abc_k', 'abc_eps_q',
                   'abc_fit_n',

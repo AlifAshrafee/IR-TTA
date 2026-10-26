@@ -22,6 +22,9 @@
 #   open3  open set: 3-task sources on HIDE / LOLv2-Synthetic (O1 = all five families, threshold dark rule,
 #          natural-exposure clean images, v2 low-light; O2 = O1 + bank scale + motion-blur kernels)
 #          + input / source / x2 / DCTTA; table_open_<bb>.md
+#   final  F1 (= E1) on the suite for $BBS x $SETTINGS (ONLYTEST=1: tests only)
+#   rescore  identity / source / x2 (+ DCTTA) on the rain sets again, to record Y-PSNR
+#   controls  G1 generic synthetic FT, S1 mismatched conditioning, Z500/Z5000 random-init (PromptIR 3-task, $CSETS)
 #   ours   A8 on the suite for $BBS x $SETTINGS (ONLYTEST=1 skips the *_val sets)
 #   tta_a  loss study A, PromptIR 5-task validation sets ($TSETS): which pair signal (v0.2 'all', v0 'gain' on rain,
 #          ABC-selected pairs) moves the model; + source/input rows in results/tta
@@ -244,6 +247,58 @@ stage_open3() {
           --families all --abc_k 8 --exposure_match camera --nss_color \
           --dark_rule threshold --dark_q 0.05 --dark_action natural --lowlight_op v2 --bank_res target --blur_op mixed
       if [[ $B == promptir ]]; then run --method dctta $M --target $T $(size_args $T); fi
+    done
+  done
+}
+
+# ---- final configuration F1 (= E1: ABC + camera exposure + colour NSS + source-decided under-exposure, anchor) ----
+f1_flags() {   # $1 = setting
+  local fam; [[ $1 == 3task ]] && fam="noise+rain+haze" || fam="all"
+  echo "--families $fam --abc_k 8 --exposure_match camera --nss_color --dark_rule source --dark_action anchor"
+}
+stage_final() {   # every suite set (ONLYTEST=1: tests only), mixes 0.5 and 1
+  local B S M T
+  for B in $BBS; do for S in $SETTINGS; do
+    M=$(model_args $B $S) || continue
+    for T in ${TARGETS[$S]}; do
+      [[ $ONLYTEST == 1 && $T == *_val ]] && continue
+      run --method transfer $M --target $T $(size_args $T) --max_steps 500 --eval_alphas 0.5 1.0 --tag F1 $(f1_flags $S)
+    done
+  done; done
+}
+
+# re-run the cheap rows on the rain sets so they carry Y-PSNR (the deraining metric); DCTTA on PromptIR too
+stage_rescore() {
+  local B S M T
+  for B in $BBS; do for S in $SETTINGS; do
+    M=$(model_args $B $S) || continue
+    for T in Rain100H Rain100H_val; do
+      if [[ $B == promptir ]]; then run --method identity $M --target $T $(size_args $T) --overwrite; fi
+      run --method source $M --target $T $(size_args $T) --overwrite
+      run --method flow --n_apply 2 $M --target $T $(size_args $T) --overwrite
+      if [[ $B == promptir && ${RESCORE_DCTTA:-1} == 1 ]]; then run --method dctta $M --target $T $(size_args $T) --overwrite; fi
+    done
+  done; done
+}
+
+# ---- controls for the TTA narrative (PromptIR 3-task, CSETS) ----
+#   G1  generic synthetic fine-tuning: same pairs machinery, NO target conditioning (no ABC, no exposure matching)
+#   S1  F1 conditioned on the WRONG target (--cond_target): adapt on another set's images, evaluate on this one
+#   Z1/Z2  no source: same architecture, random init, all weights trained on F1's target-conditioned pairs,
+#          500 steps (the TTA budget) and 5000 steps (10x)
+CSETS=${CSETS:-"Rain100H SOTS_Indoor DenseHaze Kodak24_Poisson"}
+declare -A SWAP=( [Rain100H]=SOTS_Indoor [SOTS_Indoor]=Kodak24_Poisson [DenseHaze]=Rain100H [Kodak24_Poisson]=SOTS_Indoor )
+stage_controls() {
+  local M T
+  M=$(model_args promptir 3task) || return 0
+  for T in $CSETS; do
+    run --method transfer $M --target $T --max_steps 500 --eval_alphas 0.5 1.0 --tag G1 \
+        --families noise+rain+haze --abc_k 1 --exposure_match none
+    run --method transfer $M --target $T --max_steps 500 --eval_alphas 0.5 1.0 --tag S1 $(f1_flags 3task) \
+        --cond_target ${SWAP[$T]}
+    for N in 500 5000; do
+      run --method transfer $M --target $T --max_steps $N --tag Z$N --init scratch --subset all --lr 2e-4 \
+          --families noise+rain+haze --abc_k 8 --exposure_match camera --nss_color
     done
   done
 }

@@ -369,6 +369,13 @@ def test_end_to_end():
         st_n = [json.loads(l) for l in open(os.path.join(t['dir'], 'results', 'test', r_n['run_id'], 'stats.jsonl'))]
         assert all(s_.get('dark') == 1 for s_ in st_n), st_n          # ratio 0.5: every patch counts as dark
         assert (r_n['skipped'] == 2) if act == 'skip' else (r_n['steps'] == 2), (act, r_n['steps'], r_n['skipped'])
+    # controls: random-init backbone trained on the pairs; adaptation conditioned on another set
+    r_z = _run(['--method', 'transfer', '--init', 'scratch', '--subset', 'all', '--lr', '2e-4', '--families', 'all',
+                '--target', 'Tiny', '--max_steps', '2', '--bank_patch', '64', '--bank_batch', '2', '--tag', 'z'])
+    assert 'ini=scratch' in r_z['run_id'] and r_z['steps'] == 2 and r_z['psnr'] != r_src['psnr'], r_z['run_id']
+    r_c = _run(['--method', 'transfer', '--cond_target', 'Tiny', '--families', 'all', '--target', 'Tiny',
+                '--max_steps', '2', '--bank_patch', '64', '--bank_batch', '2', '--tag', 'c'])
+    assert 'ct=Tiny' in r_c['run_id'] and r_c['steps'] == 2, r_c['run_id']
     # dark skip: the Tiny target patches are darker than the bank's 0.99 quantile -> every step abstains
     r_dk = _run(['--method', 'transfer', '--families', 'all', '--exposure_match', 'camera', '--dark_q', '0.99',
                  '--dark_skip', '--target', 'Tiny', '--max_steps', '3', '--bank_patch', '64', '--bank_batch', '2',
