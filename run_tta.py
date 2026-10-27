@@ -278,6 +278,7 @@ def main(argv=None):
         'cfg': config_suffix(args),
         'seed': args.seed, 'dataset_seed': args.dataset_seed,
         'n_images': summary['n'], 'psnr': summary['psnr'], 'ssim': summary['ssim'], 'psnr_y': summary.get('psnr_y'),
+        'psnr_aff': summary.get('psnr_aff'),
         'lpips': summary['lpips'],
         'drift': summary['drift'],
         'steps': method.steps, 'skipped': method.skipped, 'patches_seen': info.get('patches_seen', 0),
@@ -307,7 +308,7 @@ def main(argv=None):
             asum, arows = evaluate_detailed(method.eval_model, eval_loader(ds, args.num_workers), device,
                                             lpips_metric=lpips_metric)
             ares = dict(result, run_id=f"{run_id}-a{a:g}", eval_alpha=a, n_images=asum['n'], psnr=asum['psnr'],
-                        psnr_y=asum.get('psnr_y'),
+                        psnr_y=asum.get('psnr_y'), psnr_aff=asum.get('psnr_aff'),
                         ssim=asum['ssim'], lpips=asum['lpips'], drift=asum['drift'], probe_final=None,
                         predict_time_s=time.time() - t0, retention=retention_eval())
             adir = os.path.join(run_dir, f"alpha{a:g}")

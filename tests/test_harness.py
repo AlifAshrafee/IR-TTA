@@ -207,6 +207,17 @@ def test_degradations():
     assert len(picks[3]) == 2 and picks[0].shape == c[:2].shape
 
 
+def test_psnr_aff():
+    from irtta.ymetrics import psnr_aff_y, psnr_y
+    g = torch.Generator().manual_seed(9)
+    gt = torch.rand(1, 3, 48, 48, generator=g) * 0.6 + 0.2
+    veil = 0.6 * gt + 0.3                                  # pure global contrast/brightness error
+    noisy = (gt + 0.05 * torch.randn(gt.shape, generator=g)).clamp(0, 1)
+    assert psnr_aff_y(veil, gt) > psnr_y(veil, gt) + 10 and psnr_aff_y(veil, gt) > 40   # affine error removed
+    assert abs(psnr_aff_y(noisy, gt) - psnr_y(noisy, gt)) < 0.6                         # structural error stays
+    assert psnr_aff_y(noisy, gt) >= psnr_y(noisy, gt) - 1e-9
+
+
 def test_nss():
     from irtta import nss as N
     g = torch.Generator().manual_seed(4)

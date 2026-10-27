@@ -25,7 +25,9 @@
 #   final  F1 (= E1) on the suite for $BBS x $SETTINGS (ONLYTEST=1: tests only)
 #   rescore  identity / source / x2 (+ DCTTA) on the rain sets again, to record Y-PSNR
 #   controls  G1 generic synthetic FT, S1 mismatched conditioning, Z500/Z5000 random-init (PromptIR 3-task, $CSETS)
-#   controls5  the same controls on PromptIR 5-task, HIDE and LOLv2-Synthetic ($CSETS5)
+#   diag   EXP=diag: source / F1 / G1 / Z500 / ZG500 (random init, generic pairs), PromptIR 3-task, $CSETS, + DCTTA
+#          on Rain100H; every run records affine-corrected Y-PSNR (tools/diag.py: photometric vs structural gain)
+#   controls5  EXP=diag: the same + S1, Z5000 on PromptIR 5-task, HIDE and LOLv2-Synthetic ($CSETS5)
 #   ours   A8 on the suite for $BBS x $SETTINGS (ONLYTEST=1 skips the *_val sets)
 #   tta_a  loss study A, PromptIR 5-task validation sets ($TSETS): which pair signal (v0.2 'all', v0 'gain' on rain,
 #          ABC-selected pairs) moves the model; + source/input rows in results/tta
@@ -304,21 +306,48 @@ stage_controls() {
   done
 }
 
-# controls on the 5-task-only families (PromptIR 5-task): blur and low-light need learned priors; does scratch cope?
+# ---- diagnostics (EXP=diag, all runs record psnr_aff = affine-corrected Y-PSNR; tools/diag.py) ----
+#   2x2 factorial {source init, random init} x {target-conditioned pairs (ABC + camera), generic pairs}:
+#   F1, G1 (source) and Z500, ZG500 (random init), + the source row; DCTTA on Rain100H (does its gain survive
+#   removing the global photometric error?)
+stage_diag() {
+  local EXP=diag M T
+  M=$(model_args promptir 3task) || return 0
+  for T in $CSETS; do
+    run --method source $M --target $T
+    run --method transfer $M --target $T --max_steps 500 --eval_alphas 0.5 1.0 --tag F1 $(f1_flags 3task)
+    run --method transfer $M --target $T --max_steps 500 --eval_alphas 0.5 1.0 --tag G1 \
+        --families noise+rain+haze --abc_k 1 --exposure_match none
+    run --method transfer $M --target $T --max_steps 500 --tag Z500 --init scratch --subset all --lr 2e-4 \
+        --families noise+rain+haze --abc_k 8 --exposure_match camera --nss_color
+    run --method transfer $M --target $T --max_steps 500 --tag ZG500 --init scratch --subset all --lr 2e-4 \
+        --families noise+rain+haze --abc_k 1 --exposure_match none
+  done
+  run --method dctta $M --target Rain100H
+}
+
+# the same on the 5-task-only families (PromptIR 5-task, HIDE / LOLv2-Synthetic), + S1 and Z5000. Blur and
+# low-light should need learned priors. Random init gets the best source-free under-exposure rule (threshold on
+# the clean bank's 5% brightness quantile, natural-exposure clean images): F1's rule asks the source.
 CSETS5=${CSETS5:-"HIDE LOLv2_Syn"}
 declare -A SWAP5=( [HIDE]=LOLv2_Syn [LOLv2_Syn]=HIDE )
+ZDARK5="--dark_rule threshold --dark_q 0.05 --dark_action natural"
 stage_controls5() {
-  local M T N
+  local EXP=diag M T N
   M=$(model_args promptir 5task) || return 0
   for T in $CSETS5; do
+    run --method source $M --target $T
+    run --method transfer $M --target $T --max_steps 500 --eval_alphas 0.5 1.0 --tag F1 $(f1_flags 5task)
     run --method transfer $M --target $T --max_steps 500 --eval_alphas 0.5 1.0 --tag G1 \
         --families all --abc_k 1 --exposure_match none
     run --method transfer $M --target $T --max_steps 500 --eval_alphas 0.5 1.0 --tag S1 $(f1_flags 5task) \
         --cond_target ${SWAP5[$T]}
     for N in 500 5000; do
       run --method transfer $M --target $T --max_steps $N --tag Z$N --init scratch --subset all --lr 2e-4 \
-          --families all --abc_k 8 --exposure_match camera --nss_color
+          --families all --abc_k 8 --exposure_match camera --nss_color $ZDARK5
     done
+    run --method transfer $M --target $T --max_steps 500 --tag ZG500 --init scratch --subset all --lr 2e-4 \
+        --families all --abc_k 1 --exposure_match none
   done
 }
 
