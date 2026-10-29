@@ -239,3 +239,51 @@ class CleanBank:
             t = torch.rot90(t, int(torch.randint(4, (1,), generator=generator)), dims=(1, 2))
             out.append(t)
         return torch.stack(out, 0)
+
+
+class PairBank:
+    """Real (LQ, GT) training pairs held in RAM as uint8 (``max_images`` evenly spaced, same names in both folders);
+    ``sample`` returns aligned random augmented crops. Oracle diagnostic for transfer TTA (``--oracle_pairs``)."""
+
+    def __init__(self, spec, max_images=300, min_side=192):
+        names = evenly_spaced(available_names(spec), max_images if max_images and max_images > 0 else 10 ** 9)
+        self.pairs = []
+        for nm in names:
+            lq = Image.open(os.path.join(spec.lq, nm)).convert('RGB')
+            gt = Image.open(os.path.join(spec.gt, nm)).convert('RGB')
+            if spec.max_side and max(lq.size) > spec.max_side:
+                f = spec.max_side / max(lq.size)
+                size = (max(1, round(lq.size[0] * f)), max(1, round(lq.size[1] * f)))
+                lq, gt = lq.resize(size, Image.BICUBIC), gt.resize(size, Image.BICUBIC)
+            a, b = np.array(lq), np.array(gt)
+            if a.shape == b.shape and min(a.shape[:2]) >= min_side:
+                self.pairs.append((a, b))
+        if not self.pairs:
+            raise ValueError(f"oracle pairs {spec.name}: no aligned pair with a shorter side >= {min_side}")
+        self.name = spec.name
+
+    def __len__(self):
+        return len(self.pairs)
+
+    def sample(self, n, size, generator):
+        ys, cs = [], []
+        for _ in range(n):
+            a, b = self.pairs[int(torch.randint(len(self.pairs), (1,), generator=generator))]
+            H, W = a.shape[:2]
+            s = min(size, H, W)
+            i = int(torch.randint(0, H - s + 1, (1,), generator=generator))
+            j = int(torch.randint(0, W - s + 1, (1,), generator=generator))
+            flip = float(torch.rand(1, generator=generator)) < 0.5
+            rot = int(torch.randint(4, (1,), generator=generator))
+            pair = []
+            for img in (a, b):
+                t = torch.from_numpy(np.ascontiguousarray(img[i:i + s, j:j + s])).permute(2, 0, 1).float() / 255.
+                if s != size:
+                    t = torch.nn.functional.interpolate(t[None], size=(size, size), mode='bicubic',
+                                                        align_corners=False)[0].clamp(0, 1)
+                if flip:
+                    t = torch.flip(t, dims=[2])
+                pair.append(torch.rot90(t, rot, dims=(1, 2)))
+            ys.append(pair[0])
+            cs.append(pair[1])
+        return torch.stack(ys, 0), torch.stack(cs, 0)

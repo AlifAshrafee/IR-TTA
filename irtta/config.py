@@ -99,6 +99,10 @@ def get_parser():
                         'this quantile of the target crops\' own distances; a step with no accepted pair is skipped '
                         '(0 = off, always accept the closest candidate)')
     g.add_argument('--abc_fit_n', type=int, default=256, help='crops used to fit the target / clean NSS Gaussians')
+    g.add_argument('--oracle_pairs', type=str, default=None,
+                   help='ORACLE diagnostic: train on real (LQ, GT) pairs of this registry set (e.g. the target\'s own '
+                        'training split, --bank_max evenly spaced pairs) instead of synthesising pairs: the exact '
+                        'target degradation operator, other images. Upper bound for any synthetic operator.')
     g.add_argument('--cons_weight', type=float, default=0.0,
                    help='target consistency L1(B f(x), B f_0(x)) on the target patch, f_0 = frozen source')
     g.add_argument('--cons_band', type=str, default='all', choices=['all', 'high'],
@@ -199,10 +203,10 @@ SEMANTIC_ARGS = OrderedDict([
     ('gen_train_steps', 'gts'), ('gen_sampling_steps', 'gss'), ('gen_lr', 'glr'), ('gen_sum_scale', 'gsc'),
     ('patch_size', 'ps'), ('batch_size', 'bs'), ('epochs', 'ep'), ('max_steps', 'ms'),
     ('steps_per_image', 'spi'), ('patches_per_step', 'pps'), ('stream_order', 'so'), ('online_predict', 'op'),
-    ('max_images', 'mi'), ('crop_base', 'cb'), ('backbone_opts', 'bo'), ('cond_target', 'ct'), ('init', 'ini'),
+    ('max_images', 'mi'), ('crop_base', 'cb'), ('backbone_opts', 'bo'), ('cond_target', 'ct'), ('init', 'ini'), ('oracle_pairs', 'orp'),
 ])
 _TRANSFER_ARGS = ('families', 'bank', 'bank_max', 'bank_patch', 'bank_batch', 'exposure_match', 'dark_q', 'dark_anchor', 'dark_skip', 'dark_rule', 'dark_ratio', 'dark_action', 'lowlight_op', 'blur_op', 'bank_res', 'abc_topk', 'nss_color', 'abc_k', 'abc_eps_q',
-                  'abc_fit_n',
+                  'abc_fit_n', 'oracle_pairs',
                   'cons_weight', 'cons_band', 'redeg_weight', 'nss_weight')
 _FLOW_ARGS = ('ext_alpha', 'n_apply')
 _DCTTA_ARGS = ('teacher_weight', 'gen_train_steps', 'gen_sampling_steps', 'gen_lr', 'gen_sum_scale')

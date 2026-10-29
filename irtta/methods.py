@@ -21,7 +21,7 @@ from dctta.losses import DCTTALoss
 from dctta.rddm.generator import ResidualDegradationGenerator
 from dctta.tta import DCTTA
 
-from .data import CleanBank
+from .data import CleanBank, PairBank, load_registry, resolve_spec
 from .degrade import apply_chain, chain_label, degrade_batch, draw_chain, parse_families
 from .nss import GaussianModel, downscale_crops, nss_features, random_crop_batch
 
@@ -187,6 +187,12 @@ class TransferMethod(_OptimMethod):
             logger.info(f"clean bank resized to the target's typical long side ({self.bank.long_side}px)")
         logger.info(f"transfer: families {self.families}, bank {args.bank_path} ({len(self.bank)} images), "
                     f"{args.bank_batch} x {args.bank_patch}px pairs per step, exposure match '{args.exposure_match}'")
+        self.oracle = None
+        if getattr(args, 'oracle_pairs', None):
+            if args.cons_weight > 0 or args.redeg_weight > 0:
+                raise ValueError("--oracle_pairs replaces the pair term only; use it without --cons/--redeg_weight")
+            self.oracle = PairBank(resolve_spec(args.oracle_pairs, load_registry(args.registry)), max_images=args.bank_max, min_side=args.bank_patch)
+            logger.info(f"ORACLE: training on {len(self.oracle)} real pairs of {args.oracle_pairs} (no synthesis)")
         self.gen = torch.Generator().manual_seed(int(args.seed) + 3)
         self.gen_t = torch.Generator().manual_seed(int(args.seed) + 5)   # target-side draws (crops, D)
         self.fam_counts = {}
@@ -260,61 +266,65 @@ class TransferMethod(_OptimMethod):
         for _ in range(a.iterations):
             st = {}
             with torch.no_grad():
-                c = self.bank.sample(a.bank_batch, a.bank_patch, self.gen).to(self.device)
-                tmean = x.mean(dim=(0, 2, 3), keepdim=True) if a.exposure_match != 'none' else None
-                dark, norm, f0x = None, False, None
-                if a.dark_rule != 'none' and tmean is not None:   # new path: decide, then act
-                    if a.dark_rule == 'source':
-                        f0x = self.teacher(x)
-                        ratio = float(f0x.clamp(0, 1).mean()) / max(float(x.mean()), 1e-3)
-                        st['bright_ratio'] = ratio
-                        dark = ratio >= a.dark_ratio
-                    else:
-                        dark = float(tmean.mean()) < self.floor
-                    st['dark'] = int(dark)
-                    if dark and a.dark_action == 'skip':
+                if self.oracle is not None:   # ORACLE: real target-operator pairs, nothing synthesised
+                    y, c = (t.to(self.device) for t in self.oracle.sample(a.bank_batch, a.bank_patch, self.gen))
+                    fams, norm, scores = ['oracle'] * y.shape[0], False, []
+                else:
+                    c = self.bank.sample(a.bank_batch, a.bank_patch, self.gen).to(self.device)
+                    tmean = x.mean(dim=(0, 2, 3), keepdim=True) if a.exposure_match != 'none' else None
+                    dark, norm, f0x = None, False, None
+                    if a.dark_rule != 'none' and tmean is not None:   # new path: decide, then act
+                        if a.dark_rule == 'source':
+                            f0x = self.teacher(x)
+                            ratio = float(f0x.clamp(0, 1).mean()) / max(float(x.mean()), 1e-3)
+                            st['bright_ratio'] = ratio
+                            dark = ratio >= a.dark_ratio
+                        else:
+                            dark = float(tmean.mean()) < self.floor
+                        st['dark'] = int(dark)
+                        if dark and a.dark_action == 'skip':
+                            self.skipped += 1
+                            self.last_stats = {**st, 'skipped': 1, 'x_in': float(x.mean())}
+                            continue
+                        norm = dark and a.dark_action == 'norm'
+                    if a.dark_rule == 'none' and a.dark_skip and self.floor is not None and tmean is not None \
+                            and float(tmean.mean()) < self.floor:
+                        # under-exposed patch: the clean exposure / tone curve is not identifiable from the input, so
+                        # no synthetic pair can supervise it -- abstain (the source keeps its learned mapping)
                         self.skipped += 1
-                        self.last_stats = {**st, 'skipped': 1, 'x_in': float(x.mean())}
+                        self.last_stats = {'skipped': 1, 'dark_skip': 1, 'x_in': float(x.mean())}
                         continue
-                    norm = dark and a.dark_action == 'norm'
-                if a.dark_rule == 'none' and a.dark_skip and self.floor is not None and tmean is not None \
-                        and float(tmean.mean()) < self.floor:
-                    # under-exposed patch: the clean exposure / tone curve is not identifiable from the input, so
-                    # no synthetic pair can supervise it -- abstain (the source keeps its learned mapping)
-                    self.skipped += 1
-                    self.last_stats = {'skipped': 1, 'dark_skip': 1, 'x_in': float(x.mean())}
-                    continue
-                select = self._select if self.target_model is not None else None
-                if f0x is None and (a.cons_weight > 0 or a.redeg_weight > 0):
-                    f0x = self.teacher(x)
-                cmean = None
-                legacy_anchor = (a.dark_rule == 'none' and a.dark_anchor and self.floor is not None
-                                 and tmean is not None and float(tmean.mean()) < self.floor)
-                if legacy_anchor or (dark and a.dark_action == 'anchor'):
-                    if f0x is None:
+                    select = self._select if self.target_model is not None else None
+                    if f0x is None and (a.cons_weight > 0 or a.redeg_weight > 0):
                         f0x = self.teacher(x)
-                    cmean = f0x.clamp(0, 1).mean(dim=(0, 2, 3), keepdim=True)   # the source's exposure for x
-                    st['dark_anchor'] = float(cmean.mean())
-                y, c, fams, scores = degrade_batch(c, self.families, self.gen, tmean, a.exposure_match,
-                                                   select=select, k=a.abc_k, floor=self.floor, clean_mean=cmean,
-                                                   dark=dark, ll=a.lowlight_op, topk=a.abc_topk, blur=a.blur_op)
-                if scores:
-                    st['abc_d'] = sum(scores) / len(scores)
-                if self.abc_eps is not None and scores:
-                    keep = [i for i, d in enumerate(scores) if d <= self.abc_eps]
-                    st['abc_accept'] = len(keep) / len(scores)
-                    if not keep:   # no synthetic pair is a plausible target sample: no update
-                        self.skipped += 1
-                        self.last_stats = {**st, 'skipped': 1, 'x_in': float(x.mean())}
-                        continue
-                    if len(keep) < len(scores):
-                        y, c = y[keep], c[keep]
-                        fams = [fams[i] for i in keep]
-                if a.redeg_weight > 0:
-                    chain = draw_chain(self.families, self.gen_t)
-                    dx, xk = apply_chain(x, chain, self.gen_t, tmean, 'fit')
-                    f0xk = f0x if torch.equal(xk, x) else self.teacher(xk)
-                    st['redeg_fam'] = chain_label(chain)
+                    cmean = None
+                    legacy_anchor = (a.dark_rule == 'none' and a.dark_anchor and self.floor is not None
+                                     and tmean is not None and float(tmean.mean()) < self.floor)
+                    if legacy_anchor or (dark and a.dark_action == 'anchor'):
+                        if f0x is None:
+                            f0x = self.teacher(x)
+                        cmean = f0x.clamp(0, 1).mean(dim=(0, 2, 3), keepdim=True)   # the source's exposure for x
+                        st['dark_anchor'] = float(cmean.mean())
+                    y, c, fams, scores = degrade_batch(c, self.families, self.gen, tmean, a.exposure_match,
+                                                       select=select, k=a.abc_k, floor=self.floor, clean_mean=cmean,
+                                                       dark=dark, ll=a.lowlight_op, topk=a.abc_topk, blur=a.blur_op)
+                    if scores:
+                        st['abc_d'] = sum(scores) / len(scores)
+                    if self.abc_eps is not None and scores:
+                        keep = [i for i, d in enumerate(scores) if d <= self.abc_eps]
+                        st['abc_accept'] = len(keep) / len(scores)
+                        if not keep:   # no synthetic pair is a plausible target sample: no update
+                            self.skipped += 1
+                            self.last_stats = {**st, 'skipped': 1, 'x_in': float(x.mean())}
+                            continue
+                        if len(keep) < len(scores):
+                            y, c = y[keep], c[keep]
+                            fams = [fams[i] for i in keep]
+                    if a.redeg_weight > 0:
+                        chain = draw_chain(self.families, self.gen_t)
+                        dx, xk = apply_chain(x, chain, self.gen_t, tmean, 'fit')
+                        f0xk = f0x if torch.equal(xk, x) else self.teacher(xk)
+                        st['redeg_fam'] = chain_label(chain)
             for f in fams:
                 self.fam_counts[f] = self.fam_counts.get(f, 0) + 1
             # one backward per term (gradients add up; only one graph is alive at a time)

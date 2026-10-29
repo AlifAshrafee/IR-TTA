@@ -74,6 +74,34 @@
     "split": "test",
     "task": "enhance"
   },
+  "DPDD": {
+    "lq": "{root}/Test/deblur/DPDD/LQ",
+    "gt": "{root}/Test/deblur/DPDD/GT",
+    "split": "test",
+    "task": "deblur",
+    "note": "DPDD (Abuolaim & Brown, ECCV 2020) Canon test split, 76 scenes: test_c/source (combined single image) -> LQ, test_c/target -> GT; defocus blur (the 5-task sources were trained on GoPro motion blur)"
+  },
+  "DPDD_train": {
+    "lq": "{root}/Train/deblur/DPDD/LQ",
+    "gt": "{root}/Train/deblur/DPDD/GT",
+    "split": "train",
+    "task": "deblur",
+    "note": "DPDD Canon train split (350): train_c/source -> LQ, train_c/target -> GT. Oracle pairs only (--oracle_pairs)"
+  },
+  "HIDE_train": {
+    "lq": "{root}/Train/deblur/HIDE/LQ",
+    "gt": "{root}/Train/deblur/HIDE/GT",
+    "split": "train",
+    "task": "deblur",
+    "note": "same folder as HIDE_val; oracle pairs only (--oracle_pairs, --bank_max evenly spaced)"
+  },
+  "LOLv2_Syn_train": {
+    "lq": "{root}/Train/enhance/LOL_v2_Synthetic/LQ",
+    "gt": "{root}/Train/enhance/LOL_v2_Synthetic/GT",
+    "split": "train",
+    "task": "enhance",
+    "note": "same folder as LOLv2_Syn_val; oracle pairs only (--oracle_pairs)"
+  },
   "HIDE_val": {
     "lq": "{root}/Train/deblur/HIDE/LQ",
     "gt": "{root}/Train/deblur/HIDE/GT",

@@ -12,7 +12,9 @@
 # Stages
 #   test   CPU self-tests
 #   base   input (once), source and source applied twice, for every backbone in $BBS, test + validation sets
-#   dctta  DCTTA as released, PromptIR, test + validation sets (~1 GPU-day for a full suite)
+#   dctta  DCTTA as released, every backbone in $BBS (ONLYTEST=1: tests only; ~1 GPU-day per backbone)
+#   dpdd   DPDD (defocus) test: source, F1, DCTTA for the 5-task $BBS
+#   oracle EXP=oracle: F1 / family oracle / pair oracle on HIDE, LOLv2-S, DPDD ($OBBS, 5-task)
 #   probe  Q1 + Q2a (tools/scale_probe.py, no training), backbones in $BBS, test + validation sets;
 #          report: results/probe/probe_<setting>.md
 #   ref    source only, HIDE, all six 5-task backbones (the co-author's reference table has no HIDE column)
@@ -93,11 +95,45 @@ stage_base() {
   done; done
 }
 
-stage_dctta() {
-  local S M T
-  for S in $SETTINGS; do
-    M=$(model_args promptir $S) || continue
-    for T in ${TARGETS[$S]}; do run --method dctta $M --target $T $(size_args $T); done
+stage_dctta() {   # every backbone in $BBS (DCTTA's train-prefix rule per backbone: dctta/models TRAIN_PREFIXES)
+  local B S M T
+  for B in $BBS; do for S in $SETTINGS; do
+    M=$(model_args $B $S) || continue
+    for T in ${TARGETS[$S]}; do
+      [[ $ONLYTEST == 1 && $T == *_val ]] && continue
+      run --method dctta $M --target $T $(size_args $T)
+    done
+  done; done
+}
+
+# DPDD (defocus; 5-task sources were trained on GoPro motion blur): source, DCTTA, F1, for $BBS
+stage_dpdd() {
+  local B M
+  for B in $BBS; do
+    M=$(model_args $B 5task) || continue
+    run --method source $M --target DPDD
+    run --method transfer $M --target DPDD --max_steps 500 --tag F1 $(f1_flags 5task)
+    run --method dctta $M --target DPDD
+  done
+}
+
+# ORACLE ladder on blur / low-light (EXP=oracle, $OBBS, 5-task): is the synthetic operator the bottleneck?
+#   F1        ours (all families, ABC picks the family and the operator)
+#   F1fam     family oracle: only the target's family (blur / low-light), ABC within it
+#   ORpair    pair oracle: real pairs of the target's own training split (its exact operator, other images)
+OBBS=${OBBS:-promptir}
+declare -A OTRAIN=( [HIDE]=HIDE_train [LOLv2_Syn]=LOLv2_Syn_train [DPDD]=DPDD_train )
+stage_oracle() {
+  local EXP=oracle B M T
+  for B in $OBBS; do
+    M=$(model_args $B 5task) || continue
+    for T in ${OSETS:-HIDE LOLv2_Syn DPDD}; do
+      run --method source $M --target $T
+      run --method transfer $M --target $T --max_steps 500 --tag F1 $(f1_flags 5task)
+      run --method transfer $M --target $T --max_steps 500 --tag F1fam $(f1_flags 5task | sed 's/--families all/--families oracle/')
+      run --method transfer $M --target $T --max_steps 500 --tag ORpair --oracle_pairs ${OTRAIN[$T]} \
+          --abc_k 1 --exposure_match none
+    done
   done
 }
 

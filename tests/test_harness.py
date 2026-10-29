@@ -387,6 +387,13 @@ def test_end_to_end():
     r_c = _run(['--method', 'transfer', '--cond_target', 'Tiny', '--families', 'all', '--target', 'Tiny',
                 '--max_steps', '2', '--bank_patch', '64', '--bank_batch', '2', '--tag', 'c'])
     assert 'ct=Tiny' in r_c['run_id'] and r_c['steps'] == 2, r_c['run_id']
+    # oracle pairs (real LQ/GT crops of a registry set) and the family oracle
+    r_o = _run(['--method', 'transfer', '--oracle_pairs', 'Tiny', '--abc_k', '1', '--exposure_match', 'none',
+                '--target', 'Tiny', '--max_steps', '2', '--bank_patch', '32', '--bank_batch', '2', '--tag', 'o'])
+    assert 'orp=Tiny' in r_o['run_id'] and r_o['steps'] == 2 and r_o['psnr'] != r_src['psnr'], r_o['run_id']
+    r_f = _run(['--method', 'transfer', '--families', 'oracle', '--target', 'Tiny', '--max_steps', '2',
+                '--bank_patch', '64', '--bank_batch', '2', '--tag', 'fo'])
+    assert r_f['steps'] == 2 and r_f['families'] == 'oracle', r_f['families']
     # dark skip: the Tiny target patches are darker than the bank's 0.99 quantile -> every step abstains
     r_dk = _run(['--method', 'transfer', '--families', 'all', '--exposure_match', 'camera', '--dark_q', '0.99',
                  '--dark_skip', '--target', 'Tiny', '--max_steps', '3', '--bank_patch', '64', '--bank_batch', '2',

@@ -42,9 +42,9 @@ TESTS = {
 # LOLv2-Real (test and train) is out: its scenes are LOL-v1 training scenes (tools/overlap_check.py)
 VALS = {'3task': ['Rain100H_val'], '5task': ['Rain100H_val', 'HIDE_val', 'LOLv2_Syn_val']}
 OPEN_TESTS, OPEN_VALS = ['HIDE', 'LOLv2_Syn'], ['HIDE_val', 'LOLv2_Syn_val']   # open set: 3-task model, new families
-SHORT = {'Rain100H': 'Rain100H', 'SOTS_Indoor': 'SOTS-In', 'DenseHaze': 'DenseHaze', 'OHAZY': 'O-HAZY*',
+SHORT = {'Rain100H': 'Rain100H', 'SOTS_Indoor': 'SOTS-In', 'DenseHaze': 'DenseHaze', 'OHAZY': 'O-HAZY',
          'Kodak24_Poisson': 'Kodak', 'HIDE': 'HIDE', 'LOLv2': 'LOLv2', 'LOLv2_Syn': 'LOLv2-S',
-         'Rain100H_val': 'Rain val', 'HIDE_val': 'HIDE val', 'LOLv2_val': 'LOLv2 val', 'LOLv2_Syn_val': 'LOLv2-S val'}
+         'DPDD': 'DPDD', 'Rain100H_val': 'Rain val', 'HIDE_val': 'HIDE val', 'LOLv2_val': 'LOLv2 val', 'LOLv2_Syn_val': 'LOLv2-S val'}
 NAMES = {'promptir': 'PromptIR', 'adair': 'AdaIR', 'bioir': 'Bio-IR', 'moceir': 'MoCE-IR', 'mirage': 'MIRAGE',
          'r2r': 'R2R'}
 ORDER = ['Input', 'Source', 'Reported', 'Source flow', 'DCTTA', 'Ours']
@@ -105,7 +105,11 @@ def _rows_for(summary_rows, setting, backbone, cols):
 
 
 def build(summary_rows, setting, backbone, cols=None):
-    cols = cols or (TESTS[setting] + [v for v in VALS[setting] if v not in TESTS[setting]])
+    if cols is None:
+        cols = TESTS[setting] + [v for v in VALS[setting] if v not in TESTS[setting]]
+        known = set(cols) | set(OPEN_TESTS) | set(OPEN_VALS) | {'LOLv2', 'LOLv2_val'}
+        cols = cols + sorted({r['target'] for r in summary_rows if r['source'] == setting
+                              and (r.get('backbone') or 'promptir') == backbone and r['target'] not in known})
     table = OrderedDict()   # label -> {target: (mean, std, n)}
     for r in _rows_for(summary_rows, setting, backbone, cols):
         lbl = label(r)
@@ -190,10 +194,55 @@ def summary_table(summary, args):
     return '\n'.join(lines)
 
 
+def paper_table(summary, setting, args):
+    """Literature layout: test sets as columns; per backbone three rows (source, + DCTTA, + ours at --alpha)."""
+    tests = TESTS[setting] + [t for t in args.extra if t not in TESTS[setting]]
+    head = ['Method'] + [SHORT.get(t, t) for t in tests] + ['Avg']
+    lines = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)]
+    for bb in NAMES:
+        rows = {'src': {}, 'dctta': {}, 'ours': {}}
+        for r in _rows_for(summary, setting, bb, tests):
+            if r['method'] == 'source':
+                key = 'src'
+            elif r['method'] == 'dctta':
+                key = 'dctta'
+            elif (r['method'] == 'transfer' and (r.get('tag') or '') == args.tag
+                  and abs((num(r.get('eval_alpha')) or 1.0) - args.alpha) < 1e-9):
+                key = 'ours'
+            else:
+                continue
+            v = value(r)[0]
+            if args.ssim and num(r.get('ssim_mean')) is not None:
+                v = (v, num(r['ssim_mean']))
+            rows[key][r['target']] = v
+        if not rows['src']:
+            continue
+        for key, name in (('src', NAMES[bb]), ('dctta', f"{NAMES[bb]} + DCTTA"), ('ours', f"{NAMES[bb]} + Ours")):
+            cell = rows[key]
+            out = [name]
+            for t in tests:
+                v = cell.get(t)
+                if v is None:
+                    out.append('')
+                    continue
+                p = v[0] if isinstance(v, tuple) else v
+                best = max((rows[k][t][0] if isinstance(rows[k][t], tuple) else rows[k][t])
+                           for k in rows if t in rows[k])
+                txt = f"{p:.2f}" + (f"/{v[1]:.3f}" if isinstance(v, tuple) else '')
+                out.append(f"**{txt}**" if abs(p - best) < 1e-9 else txt)
+            ps = [cell[t][0] if isinstance(cell[t], tuple) else cell[t] for t in tests if t in cell]
+            out.append(f"{sum(ps) / len(ps):.2f}" if len(ps) == len(tests) else '')
+            lines.append('| ' + ' | '.join(out) + ' |')
+    return '\n'.join(lines)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument('root', help='folder holding summary.csv (tools/aggregate.py output)')
-    p.add_argument('--tag', default='A8', help="summary table: our runs' --tag ('' = the untagged v0.1 runs)")
+    p.add_argument('--alpha', type=float, default=1.0, help='paper tables: weight mix of our runs')
+    p.add_argument('--extra', nargs='*', default=[], help='paper tables: extra test columns (e.g. DPDD)')
+    p.add_argument('--ssim', action='store_true', help='paper tables: PSNR/SSIM cells')
+    p.add_argument('--tag', default='F1', help="summary table: our runs' --tag ('' = the untagged v0.1 runs)")
     p.add_argument('--families', default='', help="summary table: our runs' --families ('' = any)")
     p.add_argument('--exposure_match', default='camera', help="summary table: our runs' --exposure_match")
     args = p.parse_args()
@@ -226,6 +275,15 @@ def main():
               f"The 3-task model never saw blur or low-light; the reference row is the same backbone trained on "
               f"them (5-task).\n\n" + render(cols, rows, '3task', tests=OPEN_TESTS))
         path = os.path.join(args.root, f'table_open_{bb}.md')
+        with open(path, 'w') as f:
+            f.write(md + '\n')
+        print(md + '\n')
+        print(f"-> {path}\n")
+    for setting in ('3task', '5task'):
+        md = (f"## {setting} -- PSNR (dB){'/SSIM' if args.ssim else ''}, test sets; Ours = {args.tag}, mix {args.alpha:g}. "
+              f"Rain: BT.601 Y-PSNR; others RGB. Bold = best of the three rows per backbone.\n\n"
+              + paper_table(summary, setting, args))
+        path = os.path.join(args.root, f'table_paper_{setting}.md')
         with open(path, 'w') as f:
             f.write(md + '\n')
         print(md + '\n')
