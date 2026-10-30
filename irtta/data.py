@@ -245,8 +245,12 @@ class PairBank:
     """Real (LQ, GT) training pairs held in RAM as uint8 (``max_images`` evenly spaced, same names in both folders);
     ``sample`` returns aligned random augmented crops. Oracle diagnostic for transfer TTA (``--oracle_pairs``)."""
 
-    def __init__(self, spec, max_images=300, min_side=192):
-        names = evenly_spaced(available_names(spec), max_images if max_images and max_images > 0 else 10 ** 9)
+    def __init__(self, spec, max_images=300, min_side=192, exclude=()):
+        """``exclude``: image names never used (the evaluated target images when the oracle split and the target
+        share a folder, e.g. HIDE_val targets with HIDE_train pairs)."""
+        exclude = set(exclude)
+        pool = [n for n in available_names(spec) if n not in exclude]
+        names = evenly_spaced(pool, max_images if max_images and max_images > 0 else 10 ** 9)
         self.pairs = []
         for nm in names:
             lq = Image.open(os.path.join(spec.lq, nm)).convert('RGB')
@@ -259,7 +263,8 @@ class PairBank:
             if a.shape == b.shape and min(a.shape[:2]) >= min_side:
                 self.pairs.append((a, b))
         if not self.pairs:
-            raise ValueError(f"oracle pairs {spec.name}: no aligned pair with a shorter side >= {min_side}")
+            raise ValueError(f"oracle pairs {spec.name}: no aligned pair with a shorter side >= {min_side}"
+                             f" (after excluding {len(exclude)} evaluated target images)")
         self.name = spec.name
 
     def __len__(self):

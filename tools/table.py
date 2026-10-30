@@ -40,11 +40,15 @@ TESTS = {
               'HIDE', 'LOLv2_Syn'],
 }
 # LOLv2-Real (test and train) is out: its scenes are LOL-v1 training scenes (tools/overlap_check.py)
+# no-shift sets: each source's own test distributions (training degradation operator, new content)
+NOSHIFT = {'3task': ['BSD68_s15', 'BSD68_s25', 'BSD68_s50', 'Rain100L', 'SOTS_Outdoor'],
+           '5task': ['BSD68_s25', 'Rain100L', 'SOTS_Outdoor', 'GoPro', 'LOL']}
 VALS = {'3task': ['Rain100H_val'], '5task': ['Rain100H_val', 'HIDE_val', 'LOLv2_Syn_val']}
 OPEN_TESTS, OPEN_VALS = ['HIDE', 'LOLv2_Syn'], ['HIDE_val', 'LOLv2_Syn_val']   # open set: 3-task model, new families
 SHORT = {'Rain100H': 'Rain100H', 'SOTS_Indoor': 'SOTS-In', 'DenseHaze': 'DenseHaze', 'OHAZY': 'O-HAZY',
          'Kodak24_Poisson': 'Kodak', 'HIDE': 'HIDE', 'LOLv2': 'LOLv2', 'LOLv2_Syn': 'LOLv2-S',
-         'DPDD': 'DPDD', 'Rain100H_val': 'Rain val', 'HIDE_val': 'HIDE val', 'LOLv2_val': 'LOLv2 val', 'LOLv2_Syn_val': 'LOLv2-S val'}
+         'DPDD': 'DPDD', 'BSD68_s15': 'BSD68 σ15', 'BSD68_s25': 'BSD68 σ25', 'BSD68_s50': 'BSD68 σ50',
+         'Rain100L': 'Rain100L', 'SOTS_Outdoor': 'SOTS-Out', 'GoPro': 'GoPro', 'LOL': 'LOL-v1', 'Rain100H_val': 'Rain val', 'HIDE_val': 'HIDE val', 'LOLv2_val': 'LOLv2 val', 'LOLv2_Syn_val': 'LOLv2-S val'}
 NAMES = {'promptir': 'PromptIR', 'adair': 'AdaIR', 'bioir': 'Bio-IR', 'moceir': 'MoCE-IR', 'mirage': 'MIRAGE',
          'r2r': 'R2R'}
 ORDER = ['Input', 'Source', 'Reported', 'Source flow', 'DCTTA', 'Ours']
@@ -107,7 +111,8 @@ def _rows_for(summary_rows, setting, backbone, cols):
 def build(summary_rows, setting, backbone, cols=None):
     if cols is None:
         cols = TESTS[setting] + [v for v in VALS[setting] if v not in TESTS[setting]]
-        known = set(cols) | set(OPEN_TESTS) | set(OPEN_VALS) | {'LOLv2', 'LOLv2_val'}
+        known = (set(cols) | set(OPEN_TESTS) | set(OPEN_VALS) | {'LOLv2', 'LOLv2_val', 'RealBlurJ', 'RealBlurJ_val', 'RealBlurR'}
+                 | set(NOSHIFT['3task']) | set(NOSHIFT['5task']))
         cols = cols + sorted({r['target'] for r in summary_rows if r['source'] == setting
                               and (r.get('backbone') or 'promptir') == backbone and r['target'] not in known})
     table = OrderedDict()   # label -> {target: (mean, std, n)}
@@ -194,9 +199,9 @@ def summary_table(summary, args):
     return '\n'.join(lines)
 
 
-def paper_table(summary, setting, args):
+def paper_table(summary, setting, args, tests=None):
     """Literature layout: test sets as columns; per backbone three rows (source, + DCTTA, + ours at --alpha)."""
-    tests = TESTS[setting] + [t for t in args.extra if t not in TESTS[setting]]
+    tests = tests or (TESTS[setting] + [t for t in args.extra if t not in TESTS[setting]])
     head = ['Method'] + [SHORT.get(t, t) for t in tests] + ['Avg']
     lines = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)]
     for bb in NAMES:
@@ -288,6 +293,15 @@ def main():
             f.write(md + '\n')
         print(md + '\n')
         print(f"-> {path}\n")
+        if any(r['target'] in NOSHIFT[setting] and r['source'] == setting and r['method'] != 'identity'
+               and r.get('regime') == 'transductive' for r in summary):
+            md = (f"## {setting} NO-SHIFT sets (each source's own test distributions) -- PSNR (dB); Ours = {args.tag}, "
+                  f"mix {args.alpha:g}\n\n" + paper_table(summary, setting, args, tests=NOSHIFT[setting]))
+            path = os.path.join(args.root, f'table_paper_noshift_{setting}.md')
+            with open(path, 'w') as f:
+                f.write(md + '\n')
+            print(md + '\n')
+            print(f"-> {path}\n")
     md = (f"## Across backbones -- Avg test PSNR (dB)\n\nOurs = tag '{args.tag}', families {args.families}, "
           f"exposure match {args.exposure_match}.\n\n" + summary_table(summary, args))
     path = os.path.join(args.root, 'table_backbones.md')

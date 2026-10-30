@@ -10,6 +10,7 @@
 * ``dctta`` -- the released DCTTA (``dctta/tta.py``) driven through the harness (baseline B4).
 """
 import logging
+import os
 from copy import deepcopy
 from functools import partial
 
@@ -21,7 +22,7 @@ from dctta.losses import DCTTALoss
 from dctta.rddm.generator import ResidualDegradationGenerator
 from dctta.tta import DCTTA
 
-from .data import CleanBank, PairBank, load_registry, resolve_spec
+from .data import CleanBank, PairBank, available_names, evenly_spaced, load_registry, resolve_spec
 from .degrade import apply_chain, chain_label, degrade_batch, draw_chain, parse_families
 from .nss import GaussianModel, downscale_crops, nss_features, random_crop_batch
 
@@ -191,7 +192,17 @@ class TransferMethod(_OptimMethod):
         if getattr(args, 'oracle_pairs', None):
             if args.cons_weight > 0 or args.redeg_weight > 0:
                 raise ValueError("--oracle_pairs replaces the pair term only; use it without --cons/--redeg_weight")
-            self.oracle = PairBank(resolve_spec(args.oracle_pairs, load_registry(args.registry)), max_images=args.bank_max, min_side=args.bank_patch)
+            reg = load_registry(args.registry)
+            ospec = resolve_spec(args.oracle_pairs, reg)
+            exclude = ()
+            if args.target:   # same folder as the evaluated target images: never train on those
+                tspec = resolve_spec(args.target, reg)
+                if tspec.lq is not None and os.path.normpath(tspec.lq) == os.path.normpath(ospec.lq or ''):
+                    tn = available_names(tspec)
+                    exclude = evenly_spaced(tn, args.max_images) if args.max_images else tn
+            self.oracle = PairBank(ospec, max_images=args.bank_max, min_side=args.bank_patch, exclude=exclude)
+            if exclude:
+                logger.info(f"ORACLE: excluded the {len(exclude)} evaluated target images from the pairs")
             logger.info(f"ORACLE: training on {len(self.oracle)} real pairs of {args.oracle_pairs} (no synthesis)")
         self.gen = torch.Generator().manual_seed(int(args.seed) + 3)
         self.gen_t = torch.Generator().manual_seed(int(args.seed) + 5)   # target-side draws (crops, D)

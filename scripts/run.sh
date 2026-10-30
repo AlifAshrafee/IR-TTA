@@ -14,6 +14,7 @@
 #   base   input (once), source and source applied twice, for every backbone in $BBS, test + validation sets
 #   dctta  DCTTA as released, every backbone in $BBS (ONLYTEST=1: tests only; ~1 GPU-day per backbone)
 #   dpdd   DPDD (defocus) test: source, F1, DCTTA for the 5-task $BBS
+#   noshift  source / ours (+ DCTTA, PromptIR) on each source's own test distributions (no degradation shift)
 #   oracle EXP=oracle: F1 / family oracle / pair oracle on HIDE, LOLv2-S, DPDD ($OBBS, 5-task)
 #   probe  Q1 + Q2a (tools/scale_probe.py, no training), backbones in $BBS, test + validation sets;
 #          report: results/probe/probe_<setting>.md
@@ -111,6 +112,7 @@ stage_dpdd() {
   local B M
   for B in $BBS; do
     M=$(model_args $B 5task) || continue
+    if [[ $B == promptir ]]; then run --method identity $M --target DPDD; fi
     run --method source $M --target DPDD
     run --method transfer $M --target DPDD --max_steps 500 --tag F1 $(f1_flags 5task)
     run --method dctta $M --target DPDD
@@ -122,19 +124,43 @@ stage_dpdd() {
 #   F1fam     family oracle: only the target's family (blur / low-light), ABC within it
 #   ORpair    pair oracle: real pairs of the target's own training split (its exact operator, other images)
 OBBS=${OBBS:-promptir}
-declare -A OTRAIN=( [HIDE]=HIDE_train [LOLv2_Syn]=LOLv2_Syn_train [DPDD]=DPDD_train )
+# oracle pair splits; *_val targets share their folder with *_train -> the evaluated images are excluded
+declare -A OTRAIN=( [HIDE]=HIDE_train [LOLv2_Syn]=LOLv2_Syn_train [DPDD]=DPDD_train
+                    [HIDE_val]=HIDE_train [LOLv2_Syn_val]=LOLv2_Syn_train )
 stage_oracle() {
   local EXP=oracle B M T
   for B in $OBBS; do
     M=$(model_args $B 5task) || continue
     for T in ${OSETS:-HIDE LOLv2_Syn DPDD}; do
-      run --method source $M --target $T
-      run --method transfer $M --target $T --max_steps 500 --tag F1 $(f1_flags 5task)
-      run --method transfer $M --target $T --max_steps 500 --tag F1fam $(f1_flags 5task | sed 's/--families all/--families oracle/')
-      run --method transfer $M --target $T --max_steps 500 --tag ORpair --oracle_pairs ${OTRAIN[$T]} \
-          --abc_k 1 --exposure_match none
+      run --method source $M --target $T $(size_args $T)
+      run --method transfer $M --target $T $(size_args $T) --max_steps 500 --tag F1 $(f1_flags 5task)
+      run --method transfer $M --target $T $(size_args $T) --max_steps 500 --tag F1fam \
+          $(f1_flags 5task | sed 's/--families all/--families oracle/')
+      if [[ -n "${OTRAIN[$T]:-}" ]]; then
+        run --method transfer $M --target $T $(size_args $T) --max_steps 500 --tag ORpair \
+            --oracle_pairs ${OTRAIN[$T]} --abc_k 1 --exposure_match none
+      else
+        echo "[skip] ORpair $T: no oracle split in OTRAIN"
+      fi
     done
   done
+}
+
+# NO-SHIFT sets: each source's own test distributions (registry _source_sets: BSD68, Rain100L, SOTS-Outdoor,
+# + GoPro, LOL-v1 for 5-task) -- the degradation operator is the training one; only content changes.
+# Source and ours for $BBS; DCTTA for PromptIR (NOSHIFT_DCTTA=0 skips it).
+declare -A NOSHIFT=( [3task]="BSD68_s15 BSD68_s25 BSD68_s50 Rain100L SOTS_Outdoor"
+                     [5task]="BSD68_s25 Rain100L SOTS_Outdoor GoPro LOL" )
+stage_noshift() {
+  local B S M T fam
+  for B in $BBS; do for S in $SETTINGS; do
+    M=$(model_args $B $S) || continue
+    for T in ${NOSHIFT[$S]}; do
+      run --method source $M --target $T
+      run --method transfer $M --target $T --max_steps 500 --tag F1 $(f1_flags $S)
+      if [[ $B == promptir && ${NOSHIFT_DCTTA:-1} == 1 ]]; then run --method dctta $M --target $T; fi
+    done
+  done; done
 }
 
 stage_probe() {
