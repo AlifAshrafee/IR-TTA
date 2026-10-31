@@ -12,3 +12,4 @@ pretrain/**/*.pt
 *.txt
 !requirements.txt
 fisher/
+cache/

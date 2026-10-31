@@ -114,12 +114,43 @@ class SyntheticNoiseDataset(Dataset):
     def __len__(self):
         return len(self.names)
 
-    def __getitem__(self, idx):
+    def arrays(self, idx):
+        """(name, noisy uint8 HxWx3, clean uint8 HxWx3): deterministic per (seed, name)."""
         name = self.names[idx]
         clean = crop_to_multiple(np.array(Image.open(os.path.join(self.gt_dir, name)).convert('RGB')), self.base)
         rs = np.random.RandomState((self.seed + zlib.crc32(name.encode())) % (2 ** 32))
         noisy = np.clip(clean.astype(np.float64) + rs.randn(*clean.shape) * self.sigma, 0, 255).astype(np.uint8)
+        return name, noisy, clean
+
+    def __getitem__(self, idx):
+        name, noisy, clean = self.arrays(idx)
         return name, self.to_tensor(noisy), self.to_tensor(clean)
+
+
+def materialize_synthetic(spec, base=16, cache_root=None):
+    """A synthetic-noise spec (no LQ folder) -> the same pairs written once as PNGs (``cache/synthetic/<name>``),
+    returned as an ordinary paired spec. Bit-identical to the on-the-fly images (same noise, same uint8 clip and
+    centre crop), so evaluation numbers do not change; transductive adaptation needs stored LQ images. Safe when
+    several runs create the same set at once (written to a temporary folder, then renamed)."""
+    import dataclasses
+    import shutil
+    out = os.path.join(cache_root or os.environ.get('IRTTA_CACHE') or os.path.join(REPO_ROOT, 'cache', 'synthetic'),
+                       spec.name)
+    if not os.path.isdir(out):
+        tmp = f"{out}.tmp{os.getpid()}"
+        ds = SyntheticNoiseDataset(spec.gt, spec.noise_sigma, spec.noise_seed, base)
+        for sub in ('LQ', 'GT'):
+            os.makedirs(os.path.join(tmp, sub), exist_ok=True)
+        for i in range(len(ds)):
+            name, noisy, clean = ds.arrays(i)
+            fn = os.path.splitext(name)[0] + '.png'
+            Image.fromarray(noisy).save(os.path.join(tmp, 'LQ', fn))
+            Image.fromarray(clean).save(os.path.join(tmp, 'GT', fn))
+        try:
+            os.rename(tmp, out)
+        except OSError:   # another run finished first
+            shutil.rmtree(tmp, ignore_errors=True)
+    return dataclasses.replace(spec, lq=os.path.join(out, 'LQ'), gt=os.path.join(out, 'GT'), noise_sigma=None)
 
 
 def available_names(spec: DataSpec) -> List[str]:

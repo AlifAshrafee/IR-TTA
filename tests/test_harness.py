@@ -388,9 +388,27 @@ def test_end_to_end():
                 '--max_steps', '2', '--bank_patch', '64', '--bank_batch', '2', '--tag', 'c'])
     assert 'ct=Tiny' in r_c['run_id'] and r_c['steps'] == 2, r_c['run_id']
     # oracle pairs (real LQ/GT crops of a registry set) and the family oracle
+    # (oracle split = the target's folder: the evaluated image, --max_images 1, is excluded, 2 pairs remain)
     r_o = _run(['--method', 'transfer', '--oracle_pairs', 'Tiny', '--abc_k', '1', '--exposure_match', 'none',
-                '--target', 'Tiny', '--max_steps', '2', '--bank_patch', '32', '--bank_batch', '2', '--tag', 'o'])
-    assert 'orp=Tiny' in r_o['run_id'] and r_o['steps'] == 2 and r_o['psnr'] != r_src['psnr'], r_o['run_id']
+                '--target', 'Tiny', '--max_images', '1', '--max_steps', '2', '--bank_patch', '32',
+                '--bank_batch', '2', '--tag', 'o'])
+    assert 'orp=Tiny' in r_o['run_id'] and r_o['steps'] == 2, r_o['run_id']
+    from irtta.data import PairBank, resolve_spec, load_registry
+    t = _setup_data()
+    pb = PairBank(resolve_spec('Tiny', load_registry(t['reg'])), exclude=['img1.png'], min_side=32)
+    assert len(pb) == 2
+    # synthetic-noise target (no LQ folder): materialised once, bit-identical to the on-the-fly pairs
+    os.environ['IRTTA_CACHE'] = os.path.join(t['dir'], 'cache')
+    from irtta.data import SyntheticNoiseDataset, materialize_synthetic, make_eval_dataset
+    nspec = resolve_spec('TinyNoise', load_registry(t['reg']))
+    mspec = materialize_synthetic(nspec)
+    a, b = make_eval_dataset(nspec), make_eval_dataset(mspec)
+    for i in range(len(a)):
+        assert torch.equal(a[i][1], b[i][1]) and torch.equal(a[i][2], b[i][2])
+    r_n = _run(['--method', 'transfer', '--families', 'noise', '--target', 'TinyNoise', '--max_steps', '2',
+                '--bank_patch', '64', '--bank_batch', '2', '--tag', 'n'])
+    r_ns = _run(['--method', 'source', '--target', 'TinyNoise'])
+    assert r_n['steps'] == 2 and r_n['n_images'] == r_ns['n_images'] == 3
     r_f = _run(['--method', 'transfer', '--families', 'oracle', '--target', 'Tiny', '--max_steps', '2',
                 '--bank_patch', '64', '--bank_batch', '2', '--tag', 'fo'])
     assert r_f['steps'] == 2 and r_f['families'] == 'oracle', r_f['families']

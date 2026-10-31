@@ -32,7 +32,8 @@ from dctta.models import TRAIN_PREFIXES, build_model, parse_backbone_opts
 from dctta.utils import set_seed
 from irtta.anchors import build_anchor
 from irtta.config import config_suffix, get_args
-from irtta.data import (available_names, evenly_spaced, load_registry, make_eval_dataset, resolve_bank, resolve_spec,
+from irtta.data import (available_names, evenly_spaced, load_registry, make_eval_dataset, materialize_synthetic,
+                        resolve_bank, resolve_spec,
                         source_sets, spec_from_dirs, typical_long_side)
 from irtta.evaluation import LPIPSMetric, Probe, eval_loader, evaluate_detailed, write_rows
 from irtta.methods import build_method, rng_checksum
@@ -125,6 +126,11 @@ def main(argv=None):
     # --cond_target: adapt on (= condition the synthesis on) ANOTHER set's images, evaluate on the target (a control:
     # if the gain comes from inferring the target's degradations, it must vanish when conditioned on the wrong set)
     cspec = resolve_spec(args.cond_target, registry) if args.cond_target else spec
+    if args.regime == 'transductive' and args.method not in ('source', 'identity', 'flow') and cspec.synthetic:
+        # synthetic-noise sets (e.g. BSD68_s25) have no LQ folder: write the identical pairs once and use those
+        same = cspec is spec
+        cspec = materialize_synthetic(cspec, base=args.crop_base)
+        spec = cspec if same else spec
     args.target_long = typical_long_side(cspec) if (args.method == 'transfer' and args.bank_res == 'target') else None
     run_id = make_run_id(args, spec.name, source)
     run_dir = os.path.join(args.out_root, args.exp, run_id)
