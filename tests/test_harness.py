@@ -408,6 +408,10 @@ def test_end_to_end():
     r_n = _run(['--method', 'transfer', '--families', 'noise', '--target', 'TinyNoise', '--max_steps', '2',
                 '--bank_patch', '64', '--bank_batch', '2', '--tag', 'n'])
     r_ns = _run(['--method', 'source', '--target', 'TinyNoise'])
+    # target images smaller than --patch_size (96 px < 128): the largest 16-aligned square is used
+    r_sm = _run(['--method', 'transfer', '--families', 'noise', '--target', 'Tiny', '--patch_size', '128',
+                 '--max_steps', '1', '--bank_patch', '64', '--bank_batch', '2', '--tag', 'small'])
+    assert r_sm['steps'] == 1
     assert r_n['steps'] == 2 and r_n['n_images'] == r_ns['n_images'] == 3
     r_f = _run(['--method', 'transfer', '--families', 'oracle', '--target', 'Tiny', '--max_steps', '2',
                 '--bank_patch', '64', '--bank_batch', '2', '--tag', 'fo'])

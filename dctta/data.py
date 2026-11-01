@@ -73,11 +73,14 @@ class AdaptationPatchDataset(Dataset):
 
     def _crop_patch(self, img):
         H, W = img.shape[:2]
-        if H < self.patch_size or W < self.patch_size:
-            raise ValueError(f"image too small: {H}x{W}, patch={self.patch_size}")
-        ind_H = random.randint(0, H - self.patch_size)
-        ind_W = random.randint(0, W - self.patch_size)
-        return img[ind_H:ind_H + self.patch_size, ind_W:ind_W + self.patch_size]
+        s = self.patch_size
+        if H < s or W < s:   # smaller image (e.g. some SOTS-Outdoor scenes): largest 16-aligned square that fits
+            s = min(H // 16 * 16, W // 16 * 16)
+            if s < 16:
+                raise ValueError(f"image too small: {H}x{W}, patch={self.patch_size}")
+        ind_H = random.randint(0, H - s)
+        ind_W = random.randint(0, W - s)
+        return img[ind_H:ind_H + s, ind_W:ind_W + s]
 
     def __len__(self):
         return len(self.lq_list)
