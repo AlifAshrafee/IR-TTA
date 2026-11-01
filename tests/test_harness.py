@@ -207,6 +207,27 @@ def test_degradations():
     assert len(picks[3]) == 2 and picks[0].shape == c[:2].shape
 
 
+def test_famsel():
+    from irtta.famsel import extra_features, fam_features, family_posterior
+    g = torch.Generator().manual_seed(3)
+    x = torch.rand(4, 3, 64, 64, generator=g) * 0.6 + 0.1
+    e1, e2 = extra_features(x), extra_features(0.5 * x)
+    assert e1.shape == (4, 5) and torch.allclose(e1[:, 3:], e2[:, 3:], atol=0.05), (e1, e2)   # noise, slope: gain-free
+    assert torch.allclose(e1[:, :3], e2[:, :3], rtol=0.05)                                     # quantile ratios
+    k = torch.ones(1, 1, 7, 7) / 49
+    xb = torch.nn.functional.conv2d(torch.nn.functional.pad(x, (3, 3, 3, 3), mode='reflect'),
+                                    k.repeat(3, 1, 1, 1), groups=3)
+    assert (extra_features(xb)[:, 4] < e1[:, 4]).all()                                         # blur: steeper spectrum
+    assert fam_features(x).shape == (4, 37)
+
+    class _Bank:
+        def sample(self, n, size, gen):
+            return torch.rand(n, 3, size, size, generator=gen)
+    tc = (torch.rand(12, 3, 64, 64, generator=g) + 0.3 * torch.randn(12, 3, 64, 64, generator=g)).clamp(0, 1)
+    w, st, eps = family_posterior(tc, _Bank(), ['noise', 'blur'], g, k=2, n_pilot=8, size=64)
+    assert abs(sum(w) - 1) < 1e-6 and set(st) == {'noise', 'blur'}
+
+
 def test_psnr_aff():
     from irtta.ymetrics import psnr_aff_y, psnr_y
     g = torch.Generator().manual_seed(9)
@@ -416,6 +437,11 @@ def test_end_to_end():
     r_f = _run(['--method', 'transfer', '--families', 'oracle', '--target', 'Tiny', '--max_steps', '2',
                 '--bank_patch', '64', '--bank_batch', '2', '--tag', 'fo'])
     assert r_f['steps'] == 2 and r_f['families'] == 'oracle', r_f['families']
+    # set-level family selection (ABC model choice) in the method
+    r_fs = _run(['--method', 'transfer', '--families', 'noise+blur', '--fam_select', 'abc', '--fam_pilot', '8',
+                 '--abc_k', '2', '--abc_fit_n', '8', '--nss_color', '--exposure_match', 'camera', '--target', 'Tiny',
+                 '--max_steps', '2', '--bank_patch', '64', '--bank_batch', '2', '--tag', 'fs'])
+    assert 'fsel=abc' in r_fs['run_id'] and r_fs['steps'] == 2, r_fs['run_id']
     # dark skip: the Tiny target patches are darker than the bank's 0.99 quantile -> every step abstains
     r_dk = _run(['--method', 'transfer', '--families', 'all', '--exposure_match', 'camera', '--dark_q', '0.99',
                  '--dark_skip', '--target', 'Tiny', '--max_steps', '3', '--bank_patch', '64', '--bank_batch', '2',

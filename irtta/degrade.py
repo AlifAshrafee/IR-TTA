@@ -398,16 +398,19 @@ def parse_families(spec, task=None):
     return fams
 
 
-def draw_chain(families, g):
-    """One chain from ``parse_families`` output: a random multi-primitive chain for ['compose'], else a uniformly
-    drawn single-family chain."""
+def draw_chain(families, g, weights=None):
+    """One chain from ``parse_families`` output: a random multi-primitive chain for ['compose'], else a single-family
+    chain drawn uniformly, or with probabilities ``weights`` (aligned with ``families``; --fam_select)."""
     if families == ['compose']:
         return random_chain(g)
+    if weights is not None:
+        i = int(torch.multinomial(torch.tensor(weights, dtype=torch.float64), 1, generator=g))
+        return FAMILY_CHAINS[families[i]]
     return FAMILY_CHAINS[families[int(torch.randint(len(families), (1,), generator=g))]]
 
 
 def degrade_batch(c, families, g, target_mean=None, mode='fit', select=None, k=1, floor=None, clean_mean=None,
-                  dark=None, ll='v1', topk=1, blur='v1'):
+                  dark=None, ll='v1', topk=1, blur='v1', weights=None):
     """Degrade each image of ``c`` (B,3,H,W). ``families``: list from ``parse_families``; ``mode``: exposure
     matching ('fit' / 'clean' / 'gain' / 'camera', used when ``target_mean`` is given).
 
@@ -417,7 +420,7 @@ def degrade_batch(c, families, g, target_mean=None, mode='fit', select=None, k=1
     ys, cs, used, scores = [], [], [], []
     for i in range(c.shape[0]):
         if select is None or k <= 1:
-            chain = draw_chain(families, g)
+            chain = draw_chain(families, g, weights)
             y, ci = apply_chain(c[i:i + 1], chain, g, target_mean, mode, floor, clean_mean, dark, ll, blur)
             ys.append(y)
             cs.append(ci)
@@ -425,7 +428,7 @@ def degrade_batch(c, families, g, target_mean=None, mode='fit', select=None, k=1
             continue
         cand = []
         for _ in range(k):
-            ch = draw_chain(families, g)
+            ch = draw_chain(families, g, weights)
             yk, ck = apply_chain(c[i:i + 1], ch, g, target_mean, mode, floor, clean_mean, dark, ll, blur)
             cand.append((ch, yk, ck))
         sc = select(torch.cat([t[1] for t in cand], 0))

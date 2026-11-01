@@ -223,6 +223,7 @@ class TransferMethod(_OptimMethod):
             self.floor = float(torch.quantile(means, args.dark_q))
             logger.info(f"under-exposure threshold: target patches darker than {self.floor:.3f} "
                         f"(q={args.dark_q} of {len(means)} clean-bank image means) keep natural-exposure clean images")
+        self.fam_weights = None    # --fam_select: per-family draw probabilities
         self.target_model = None   # N(mu_T, Sigma_T) of target NSS (ABC)
         self.abc_eps = None        # ABC tolerance (--abc_eps_q)
         self.clean_model = None    # N(mu_C, Sigma_C) of clean NSS (output prior)
@@ -233,17 +234,30 @@ class TransferMethod(_OptimMethod):
     def prepare(self, loader=None):
         super().prepare(loader)
         a = self.args
-        if a.abc_k > 1:
+        tcrops = None
+        if a.abc_k > 1 or a.fam_select != 'none':
             if loader is None:
-                raise ValueError("--abc_k needs the transductive target loader")
-            feats, n = [], 0
+                raise ValueError("--abc_k / --fam_select need the transductive target loader")
+            feats, keep, n = [], [], 0
             with torch.random.fork_rng(devices=[]):   # iterating a DataLoader draws from the global RNG
                 for _, x, _ in loader:
                     crops = random_crop_batch(x, a.bank_patch, 2, self.gen_t).to(self.device)
                     feats.append(self._feat(crops))
+                    keep.append(crops)
                     n += crops.shape[0]
                     if n >= a.abc_fit_n:
                         break
+            tcrops = torch.cat(keep, 0)
+        if a.fam_select == 'abc' and self.families != ['compose']:
+            from .famsel import family_posterior
+            gp = torch.Generator().manual_seed(int(a.seed) + 7)   # own stream: the training draws are not shifted
+            w, fst, eps = family_posterior(tcrops, self.bank, self.families, gp, k=max(a.abc_k, 1),
+                                           n_pilot=a.fam_pilot, eps_q=a.fam_eps_q, mode=a.exposure_match,
+                                           size=a.bank_patch, ll=a.lowlight_op, blur=a.blur_op)
+            self.fam_weights = w
+            logger.info("family selection (ABC model choice, eps %.2f): " % eps + ", ".join(
+                f"{f} w={wi:.2f} (acc {fst[f]['acc']:.2f}, med {fst[f]['med']:.2f})" for f, wi in zip(self.families, w)))
+        if a.abc_k > 1:
             tf = torch.cat(feats, 0)
             self.target_model = GaussianModel(tf).to(self.device)
             own = self.target_model.distance(tf)
@@ -318,7 +332,8 @@ class TransferMethod(_OptimMethod):
                         st['dark_anchor'] = float(cmean.mean())
                     y, c, fams, scores = degrade_batch(c, self.families, self.gen, tmean, a.exposure_match,
                                                        select=select, k=a.abc_k, floor=self.floor, clean_mean=cmean,
-                                                       dark=dark, ll=a.lowlight_op, topk=a.abc_topk, blur=a.blur_op)
+                                                       dark=dark, ll=a.lowlight_op, topk=a.abc_topk, blur=a.blur_op,
+                                                       weights=self.fam_weights)
                     if scores:
                         st['abc_d'] = sum(scores) / len(scores)
                     if self.abc_eps is not None and scores:

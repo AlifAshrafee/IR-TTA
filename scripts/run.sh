@@ -14,6 +14,9 @@
 #   base   input (once), source and source applied twice, for every backbone in $BBS, test + validation sets
 #   dctta  DCTTA as released, every backbone in $BBS (ONLYTEST=1: tests only; ~1 GPU-day per backbone)
 #   dpdd   DPDD (defocus) test: source, F1, DCTTA for the 5-task $BBS
+#   famval EXP=suite: F2 (= F1 + --fam_select abc) vs F1 on the validation sets, PromptIR + R2R (adopt F2 only if
+#          tools/family_check.py passes and the validation mean does not drop); OURS=F2 then switches final / dpdd /
+#          noshift to F2
 #   noshift  source / ours (+ DCTTA, PromptIR) on each source's own test distributions (no degradation shift)
 #   oracle EXP=oracle: F1 / family oracle / pair oracle on HIDE, LOLv2-S, DPDD ($OBBS, 5-task)
 #   probe  Q1 + Q2a (tools/scale_probe.py, no training), backbones in $BBS, test + validation sets;
@@ -114,7 +117,7 @@ stage_dpdd() {
     M=$(model_args $B 5task) || continue
     if [[ $B == promptir ]]; then run --method identity $M --target DPDD; fi
     run --method source $M --target DPDD
-    run --method transfer $M --target DPDD --max_steps 500 --tag F1 $(f1_flags 5task)
+    run --method transfer $M --target DPDD --max_steps 500 --tag $OURS $(ours_flags 5task)
     run --method dctta $M --target DPDD
   done
 }
@@ -157,7 +160,7 @@ stage_noshift() {
     M=$(model_args $B $S) || continue
     for T in ${NOSHIFT[$S]}; do
       run --method source $M --target $T
-      run --method transfer $M --target $T --max_steps 500 --tag F1 $(f1_flags $S)
+      run --method transfer $M --target $T --max_steps 500 --tag $OURS $(ours_flags $S)
       if [[ $B == promptir && ${NOSHIFT_DCTTA:-1} == 1 ]]; then run --method dctta $M --target $T; fi
     done
   done; done
@@ -317,6 +320,23 @@ stage_open3() {
 }
 
 # ---- final configuration F1 (= E1: ABC + camera exposure + colour NSS + source-decided under-exposure, anchor) ----
+OURS=${OURS:-F1}   # F2 = F1 + set-level family selection (--fam_select abc), if adopted
+ours_flags() { local x; x=$(f1_flags $1); [[ $OURS == F2 ]] && x="$x --fam_select abc"; echo "$x"; }
+
+# F2 development: set-level family selection on the VALIDATION sets only (PromptIR, R2R), against F1 / source
+stage_famval() {
+  local B S M T
+  for B in promptir r2r; do for S in $SETTINGS; do
+    M=$(model_args $B $S) || continue
+    local VS="Rain100H_val"; [[ $S == 5task ]] && VS="Rain100H_val HIDE_val LOLv2_Syn_val DPDD_val"
+    for T in $VS; do
+      run --method source $M --target $T $(size_args $T)
+      run --method transfer $M --target $T $(size_args $T) --max_steps 500 --tag F1 $(f1_flags $S)
+      run --method transfer $M --target $T $(size_args $T) --max_steps 500 --tag F2 $(f1_flags $S) --fam_select abc
+    done
+  done; done
+}
+
 f1_flags() {   # $1 = setting
   local fam; [[ $1 == 3task ]] && fam="noise+rain+haze" || fam="all"
   echo "--families $fam --abc_k 8 --exposure_match camera --nss_color --dark_rule source --dark_action anchor"
@@ -327,7 +347,7 @@ stage_final() {   # every suite set (ONLYTEST=1: tests only), mixes 0.5 and 1
     M=$(model_args $B $S) || continue
     for T in ${TARGETS[$S]}; do
       [[ $ONLYTEST == 1 && $T == *_val ]] && continue
-      run --method transfer $M --target $T $(size_args $T) --max_steps 500 --eval_alphas 0.5 1.0 --tag F1 $(f1_flags $S)
+      run --method transfer $M --target $T $(size_args $T) --max_steps 500 --tag $OURS $(ours_flags $S)
     done
   done; done
 }

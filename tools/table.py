@@ -43,11 +43,11 @@ TESTS = {
 # no-shift sets: each source's own test distributions (training degradation operator, new content)
 NOSHIFT = {'3task': ['BSD68_s15', 'BSD68_s25', 'BSD68_s50', 'Rain100L', 'SOTS_Outdoor'],
            '5task': ['BSD68_s25', 'Rain100L', 'SOTS_Outdoor', 'GoPro', 'LOL']}
-VALS = {'3task': ['Rain100H_val'], '5task': ['Rain100H_val', 'HIDE_val', 'LOLv2_Syn_val']}
+VALS = {'3task': ['Rain100H_val'], '5task': ['Rain100H_val', 'HIDE_val', 'LOLv2_Syn_val', 'DPDD_val']}
 OPEN_TESTS, OPEN_VALS = ['HIDE', 'LOLv2_Syn'], ['HIDE_val', 'LOLv2_Syn_val']   # open set: 3-task model, new families
 SHORT = {'Rain100H': 'Rain100H', 'SOTS_Indoor': 'SOTS-In', 'DenseHaze': 'DenseHaze', 'OHAZY': 'O-HAZY',
          'Kodak24_Poisson': 'Kodak', 'HIDE': 'HIDE', 'LOLv2': 'LOLv2', 'LOLv2_Syn': 'LOLv2-S',
-         'DPDD': 'DPDD', 'BSD68_s15': 'BSD68 σ15', 'BSD68_s25': 'BSD68 σ25', 'BSD68_s50': 'BSD68 σ50',
+         'DPDD': 'DPDD', 'DPDD_val': 'DPDD val', 'BSD68_s15': 'BSD68 σ15', 'BSD68_s25': 'BSD68 σ25', 'BSD68_s50': 'BSD68 σ50',
          'Rain100L': 'Rain100L', 'SOTS_Outdoor': 'SOTS-Out', 'GoPro': 'GoPro', 'LOL': 'LOL-v1', 'Rain100H_val': 'Rain val', 'HIDE_val': 'HIDE val', 'LOLv2_val': 'LOLv2 val', 'LOLv2_Syn_val': 'LOLv2-S val'}
 NAMES = {'promptir': 'PromptIR', 'adair': 'AdaIR', 'bioir': 'Bio-IR', 'moceir': 'MoCE-IR', 'mirage': 'MIRAGE',
          'r2r': 'R2R'}

@@ -81,6 +81,13 @@
     "task": "deblur",
     "note": "DPDD (Abuolaim & Brown, ECCV 2020) Canon test split, 76 scenes: test_c/source (combined single image) -> LQ, test_c/target -> GT; defocus blur (the 5-task sources were trained on GoPro motion blur)"
   },
+  "DPDD_val": {
+    "lq": "{root}/Train/deblur/DPDD/LQ",
+    "gt": "{root}/Train/deblur/DPDD/GT",
+    "split": "val",
+    "task": "deblur",
+    "note": "DPDD Canon val split (74, val_c), the same folder as DPDD_train (the oracle pairs): blur validation set with a degradation shift"
+  },
   "DPDD_train": {
     "lq": "{root}/Train/deblur/DPDD/LQ",
     "gt": "{root}/Train/deblur/DPDD/GT",
