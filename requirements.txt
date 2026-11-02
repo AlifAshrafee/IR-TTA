@@ -8,5 +8,3 @@ einops==0.8.2
 ema-pytorch==0.7.9
 tqdm
 
-# optional: LPIPS (--lpips)
-# lpips

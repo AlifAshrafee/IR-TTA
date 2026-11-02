@@ -1,10 +1,14 @@
-"""DPDD: give each GT (all-in-focus) image its LQ (defocused) partner's file name, so the loader pairs them by name.
+"""Prepare DPDD (Abuolaim & Brown, ECCV 2020): give each GT (all-in-focus) image its LQ (defocused) partner's name.
+
+Copy the Canon test split ``test_c/source`` -> ``Test/deblur/DPDD/LQ`` and ``test_c/target`` -> ``Test/deblur/DPDD/GT``
+(and, for the oracle analysis, ``val_c/source`` / ``val_c/target`` -> ``Train/deblur/DPDD/{LQ,GT}``), then run this
+script on each pair of folders: the loader pairs images by file name.
 
 DPDD names are camera frame numbers: the two exposures of a scene are consecutive shots, so the names differ by 1-2.
 Pairing = sorted order, verified per pair: frame numbers within 2 and the 32x32 grey thumbnails correlated.
 
-    python tools/dpdd_pair.py <LQ dir> <GT dir>            # dry run: prints the pairs and any warning
-    python tools/dpdd_pair.py <LQ dir> <GT dir> --apply    # renames the GT files (two-phase, no collisions)
+    python tools/prepare_dpdd.py <LQ dir> <GT dir>            # dry run: prints the pairs and any warning
+    python tools/prepare_dpdd.py <LQ dir> <GT dir> --apply    # renames the GT files (two-phase, no collisions)
 """
 import argparse
 import os

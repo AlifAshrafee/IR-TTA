@@ -1,15 +1,11 @@
 """Natural-scene-statistics (NSS) features and Gaussian models of them, differentiable.
 
-Used by transfer TTA for two distribution-level terms (see ``irtta/methods.py``):
-
-* **ABC pair selection** (``--abc_k``): the target images define a Gaussian N(mu_T, Sigma_T) over NSS features of
-  their crops. For every clean crop, K candidate degradations are drawn from the operator prior and the candidate
-  whose degraded crop is closest to the target Gaussian (Mahalanobis distance) is kept. This is approximate
-  Bayesian computation: sampling the degradation prior conditioned on matching the target's summary statistics,
-  i.e. an approximate posterior over degradations given the (unlabelled) target set.
-* **Output prior** (``--nss_weight``): the restored target patch should have the NSS of clean images. The loss is
-  the Mahalanobis distance of its features to N(mu_C, Sigma_C), fitted on the clean bank (NIQE's construction,
-  Mittal, Soundararajan & Bovik, IEEE SPL 2013, as a differentiable cross-entropy term).
+Used for ABC pair selection (``--abc_k``, ``irtta/methods.py``): the target images define a Gaussian
+N(mu_T, Sigma_T) over the NSS features of their crops. For every clean crop, k candidate degradations are drawn
+from the operator prior and the candidate whose degraded crop is closest to the target Gaussian (Mahalanobis
+distance) is kept. This is approximate Bayesian computation: sampling the degradation prior conditioned on
+matching the target's summary statistics, i.e. an approximate posterior over degradations given the unlabelled
+target set.
 
 Features (BRISQUE's, Mittal, Moorthy & Bovik, IEEE TIP 2012, with moment estimates instead of GGD/AGGD fits so that
 they are differentiable). On luminance, at full and half resolution:
@@ -111,14 +107,6 @@ class GaussianModel:
         d = feats.double() - self.mu
         return ((d @ self.prec) * d).sum(dim=1).float() / self.dim
 
-    def kl_from(self, other):
-        """KL(other || self) for two GaussianModels (diagnostic: how far apart two sets are)."""
-        cov_o = torch.linalg.inv(other.prec)
-        d = (self.mu - other.mu)
-        k = self.dim
-        return 0.5 * float(torch.trace(self.prec @ cov_o) + d @ self.prec @ d - k
-                           + torch.logdet(torch.linalg.inv(self.prec)) - torch.logdet(cov_o))
-
 
 def random_crop_batch(x, size, n, generator):
     """``n`` random size x size crops of a (1, C, H, W) tensor (positions from a CPU generator)."""
@@ -132,13 +120,4 @@ def random_crop_batch(x, size, n, generator):
     return torch.cat(out, 0)
 
 
-def downscale_crops(x, factor):
-    """Anti-aliased bicubic downscale (clean-corpus crops at a coarser scale)."""
-    if factor == 1:
-        return x
-    H, W = x.shape[-2:]
-    return F.interpolate(x, size=(max(32, round(H / factor)), max(32, round(W / factor))), mode='bicubic',
-                         antialias=True, align_corners=False).clamp(0, 1)
-
-
-__all__ = ['N_FEATURES', 'nss_features', 'GaussianModel', 'random_crop_batch', 'downscale_crops', 'luminance']
+__all__ = ['N_FEATURES', 'nss_features', 'GaussianModel', 'random_crop_batch', 'luminance']

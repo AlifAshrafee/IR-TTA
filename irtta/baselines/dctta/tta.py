@@ -1,4 +1,4 @@
-"""DCTTA: degradation-consistent test-time adaptation (Tang et al., CVPR 2026).
+"""DCTTA baseline: degradation-consistent test-time adaptation (Tang et al., CVPR 2026), the released algorithm.
 
 This is the original ``tta.py::SRTTA`` class (the name betrays its origin: the class was
 copied from SRTTA, Deng et al., NeurIPS 2023) reduced to the code path that is actually
@@ -42,7 +42,6 @@ import logging
 from copy import deepcopy
 
 import torch
-import torch.optim as optim
 from tqdm import tqdm
 
 from .losses import DCTTALoss, charbonnier
@@ -83,7 +82,7 @@ def compute_tips_fisher(model, loader, fisher_ratio, device):
 
     Returns ``{name: [fisher, mask]}`` for every parameter that received a gradient; ``mask == 1``
     marks the per-tensor top-``fisher_ratio`` entries (the ones TIPS restores to theta_0).
-    Shared by ``DCTTA.compute_fisher`` and the harness's TIPS anchor (``irtta/anchors.py``).
+    Used by ``DCTTA.compute_fisher``.
     """
     device = torch.device(device)
     fishers, out = {}, {}
@@ -127,7 +126,7 @@ def compute_tips_fisher(model, loader, fisher_ratio, device):
 class DCTTA:
     def __init__(self, model, optimizer, *, teacher_weight=5.0, ema_decay=0.45, fisher_ratio=0.6,
                  use_fisher=True, pixel_weight=1.0, perceptual_weight=0.01, lowpass_weight=0.1,
-                 device='cuda', restore_leaf_names=('weight', 'bias'), log_stats=False, penalty_fn=None):
+                 device='cuda', restore_leaf_names=('weight', 'bias'), log_stats=False):
         self.model = model
         self.optimizer = optimizer
         self.device = torch.device(device)
@@ -138,8 +137,6 @@ class DCTTA:
         self.restore_leaf_names = restore_leaf_names
         self.log_stats = log_stats
         self.last_stats = {}
-        # optional parameter-space anchor (harness: L2 / Fisher-weighted L2). None == released DCTTA.
-        self.penalty_fn = penalty_fn
 
         # RNG parity with the original: there, PerceptualLoss (VGG19) was built inside compute_loss2,
         # i.e. only *after* the RDDM generator had been initialised and the DataLoader iterators had
@@ -193,11 +190,6 @@ class DCTTA:
         loss_s = self.criterion(out_student, out_student_gt)
         loss_t = self.teacher_weight * self.criterion(out_student, y_bar) if self.teacher_weight > 0 else 0.
         loss = loss_s + loss_t
-        if self.penalty_fn is not None:
-            penalty = self.penalty_fn()
-            loss = loss + penalty
-            if self.log_stats:
-                self.last_stats['penalty'] = float(penalty)
         logger.info(f"loss_s: {float(loss_s):.5f}, loss_t: {float(loss_t):.5f}")
 
         self.optimizer.zero_grad()
@@ -261,18 +253,3 @@ class DCTTA:
         self.model.load_state_dict(self.model_state, strict=True)
         self.optimizer.load_state_dict(self.optimizer_state)
 
-    def save(self, path, extra=None):
-        state = {'state_dict': self.model.state_dict(), 'teacher_state_dict': self.model_teacher.state_dict(),
-                 'optimizer': self.optimizer.state_dict(), 'ori_model': self.model_state}
-        if extra:
-            state.update(extra)
-        torch.save(state, path)
-        logger.info(f"model saved to {path}")
-
-
-def setup_dctta(model, *, lr=2e-4, betas=(0.9, 0.999), train_prefixes=DEFAULT_TRAIN_PREFIXES, **kwargs):
-    """``train_test_promptir.py::setup_tta``: configure trainable params, build Adam, wrap."""
-    model = configure_model(model, train_prefixes)
-    params, _ = collect_params(model)
-    optimizer = optim.Adam(params, lr=lr, betas=betas)
-    return DCTTA(model, optimizer, **kwargs)

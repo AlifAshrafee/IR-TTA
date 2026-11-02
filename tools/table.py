@@ -1,57 +1,53 @@
-"""Results tables: one per (backbone, source setting), plus a cross-backbone summary.
+"""Paper tables from ``tools/aggregate.py`` output (PSNR in dB; rain sets in BT.601 Y-PSNR, the deraining convention).
 
-    python tools/aggregate.py results/suite        # -> results/suite/summary.csv
-    python tools/table.py results/suite            # -> results/suite/table_<setting>_<backbone>.md, table_backbones.md
+    python tools/aggregate.py results/suite && python tools/aggregate.py results/oracle
+    python tools/table.py results/suite --oracle results/oracle
 
-Per-backbone table: methods as rows, targets as columns (PSNR, dB): the test sets, then the validation sets
-(``*_val``; O-HAZY is both, marked *). ``Avg test`` = mean over the test columns, shown only when the row has all
-of them. Bold = best non-input value per column. The Input row is shared by all backbones (it is run once). The
-"Reported" row is the co-author's number for that backbone (``configs/sota_<setting>.csv``), a reproduction check
-for our own Source row.
-
-Summary (``table_backbones.md``): per backbone and setting, Avg test of the source, the source applied twice and
-our method (``--tag``/``--families``/``--exposure_match`` select which runs), and on how many test sets ours beats
-the source.
+writes into the results folder:
+  table_main_3task.md, table_main_5task.md        test sets; per backbone: pretrained / + DCTTA / + ours
+  table_noshift_3task.md, table_noshift_5task.md  the sources' own test distributions (no degradation shift)
+  table_controls.md                               PromptIR 3-task: ours vs generic pairs (G1), mismatched
+                                                  conditioning (S1), random initialisation (Z500, Z5000, ZG500)
+  table_ablation_3task.md, table_ablation_5task.md  PromptIR: ours without each component
+  table_oracle.md                                 PromptIR 5-task blur / low-light: ours, right family, real pairs
+  table_cost.md                                   adaptation time, memory and adapted parameters
+Options: --input adds the unprocessed input row, --ssim PSNR/SSIM cells, --std seed std where n > 1.
 """
 import argparse
 import csv
 import json
 import math
 import os
-from collections import OrderedDict
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+NAMES = {'promptir': 'PromptIR', 'adair': 'AdaIR', 'bioir': 'Bio-IR', 'moceir': 'MoCE-IR', 'mirage': 'MIRAGE',
+         'r2r': 'R2R'}
+TESTS = {'3task': ['Rain100H', 'SOTS_Indoor', 'DenseHaze', 'OHAZY', 'Kodak24_Poisson'],
+         '5task': ['Rain100H', 'SOTS_Indoor', 'DenseHaze', 'OHAZY', 'Kodak24_Poisson', 'HIDE', 'LOLv2_Syn', 'DPDD']}
+NOSHIFT = {'3task': ['BSD68_s15', 'BSD68_s25', 'BSD68_s50', 'Rain100L', 'SOTS_Outdoor'],
+           '5task': ['BSD68_s25', 'Rain100L', 'SOTS_Outdoor', 'GoPro', 'LOL']}
+CONTROL_SETS = ['Rain100H', 'SOTS_Indoor', 'DenseHaze', 'Kodak24_Poisson']
+CONTROLS = [('F1', 'Ours'), ('G1', 'Generic pairs (no inference)'), ('S1', 'Conditioned on another test set'),
+            ('Z500', 'Random init, 500 steps'), ('Z5000', 'Random init, 5000 steps'),
+            ('ZG500', 'Random init, generic pairs')]
+ABLATION = [('F1', 'Ours'), ('noABC', 'w/o ABC pair selection'), ('noColor', 'w/o colour statistics'),
+            ('noExposure', 'w/o exposure matching'), ('noDark', 'w/o under-exposure rule')]
+ORACLE_SETS = ['HIDE_val', 'LOLv2_Syn_val', 'DPDD']
+ORACLE_ROWS = [('F1', 'Ours'), ('F1fam', 'Right family (oracle)'), ('ORpair', 'Real pairs of the target operator')]
+SHORT = {'Rain100H': 'Rain100H', 'SOTS_Indoor': 'SOTS-In', 'DenseHaze': 'DenseHaze', 'OHAZY': 'O-HAZY',
+         'Kodak24_Poisson': 'Kodak24', 'HIDE': 'HIDE', 'LOLv2_Syn': 'LOLv2-S', 'DPDD': 'DPDD',
+         'BSD68_s15': 'BSD68 σ15', 'BSD68_s25': 'BSD68 σ25', 'BSD68_s50': 'BSD68 σ50', 'Rain100L': 'Rain100L',
+         'SOTS_Outdoor': 'SOTS-Out', 'GoPro': 'GoPro', 'LOL': 'LOL-v1', 'HIDE_val': 'HIDE (val)',
+         'LOLv2_Syn_val': 'LOLv2-S (val)'}
 
 
 def _y_targets():
-    """Registry sets reported in luminance PSNR ('metric': 'y', the deraining convention)."""
-    try:
-        with open(os.path.join(REPO, 'configs', 'datasets.json')) as f:
-            reg = json.load(f)
-        return {k for k, v in reg.items() if isinstance(v, dict) and v.get('metric') == 'y'}
-    except (OSError, ValueError):
-        return set()
+    with open(os.path.join(REPO, 'configs', 'datasets.json')) as f:
+        reg = json.load(f)
+    return {k for k, v in reg.items() if isinstance(v, dict) and v.get('metric') == 'y'}
 
 
 Y_TARGETS = _y_targets()
-TESTS = {
-    '3task': ['Rain100H', 'SOTS_Indoor', 'DenseHaze', 'OHAZY', 'Kodak24_Poisson'],
-    '5task': ['Rain100H', 'SOTS_Indoor', 'DenseHaze', 'OHAZY', 'Kodak24_Poisson',
-              'HIDE', 'LOLv2_Syn'],
-}
-# LOLv2-Real (test and train) is out: its scenes are LOL-v1 training scenes (tools/overlap_check.py)
-# no-shift sets: each source's own test distributions (training degradation operator, new content)
-NOSHIFT = {'3task': ['BSD68_s15', 'BSD68_s25', 'BSD68_s50', 'Rain100L', 'SOTS_Outdoor'],
-           '5task': ['BSD68_s25', 'Rain100L', 'SOTS_Outdoor', 'GoPro', 'LOL']}
-VALS = {'3task': ['Rain100H_val'], '5task': ['Rain100H_val', 'HIDE_val', 'LOLv2_Syn_val', 'DPDD_val']}
-OPEN_TESTS, OPEN_VALS = ['HIDE', 'LOLv2_Syn'], ['HIDE_val', 'LOLv2_Syn_val']   # open set: 3-task model, new families
-SHORT = {'Rain100H': 'Rain100H', 'SOTS_Indoor': 'SOTS-In', 'DenseHaze': 'DenseHaze', 'OHAZY': 'O-HAZY',
-         'Kodak24_Poisson': 'Kodak', 'HIDE': 'HIDE', 'LOLv2': 'LOLv2', 'LOLv2_Syn': 'LOLv2-S',
-         'DPDD': 'DPDD', 'DPDD_val': 'DPDD val', 'BSD68_s15': 'BSD68 σ15', 'BSD68_s25': 'BSD68 σ25', 'BSD68_s50': 'BSD68 σ50',
-         'Rain100L': 'Rain100L', 'SOTS_Outdoor': 'SOTS-Out', 'GoPro': 'GoPro', 'LOL': 'LOL-v1', 'Rain100H_val': 'Rain val', 'HIDE_val': 'HIDE val', 'LOLv2_val': 'LOLv2 val', 'LOLv2_Syn_val': 'LOLv2-S val'}
-NAMES = {'promptir': 'PromptIR', 'adair': 'AdaIR', 'bioir': 'Bio-IR', 'moceir': 'MoCE-IR', 'mirage': 'MIRAGE',
-         'r2r': 'R2R'}
-ORDER = ['Input', 'Source', 'Reported', 'Source flow', 'DCTTA', 'Ours']
 
 
 def num(v):
@@ -62,253 +58,163 @@ def num(v):
         return None
 
 
-def value(r):
-    """(mean, std, fallback) of the reported metric: Y-PSNR for 'metric': 'y' sets, else RGB. Runs made before
-    Y-PSNR was recorded fall back to RGB, marked with a dagger in the tables (fallback=True)."""
-    if r['target'] in Y_TARGETS:
-        m = num(r.get('psnr_y_mean'))
-        if m is not None:
-            return m, num(r.get('psnr_y_std')), False
-        return num(r['psnr_mean']), num(r['psnr_std']), True
-    return num(r['psnr_mean']), num(r['psnr_std']), False
+def metric(r, prefix=''):
+    """(PSNR, SSIM, std) of a summary row (``prefix`` ''), or of a runs row (``prefix`` None: no _mean suffix)."""
+    sfx = '' if prefix is None else '_mean'
+    k = 'psnr_y' if r['target'] in Y_TARGETS and num(r.get('psnr_y' + sfx)) is not None else 'psnr'
+    std = num(r.get(f'{k}_std')) if prefix is not None else None
+    return num(r.get(k + sfx)), num(r.get('ssim' + sfx)), std
 
 
-def label(r):
+def row_key(r, tag):
+    """Which table row a result belongs to: 'input' / 'source' / 'dctta' / 'ours' / None."""
     m = r['method']
     if m == 'identity':
-        return 'Input'
+        return 'input'
     if m == 'source':
-        return 'Source'
-    if m == 'flow':
-        return f"Source flow (a={num(r['ext_alpha']):g}, x{int(float(r['n_apply']))})"
-    if m == 'dctta':
-        return 'DCTTA'
-    if m == 'transfer':
-        a = num(r.get('eval_alpha')) or 1.0
-        em = r.get('exposure_match') or 'fit'
-        extra = '' if em == 'fit' else f", em {em}"
-        return f"Ours {r.get('tag') or 'v0.1'} ({r['families']}{extra}, mix {a:g})"
-    return m
+        return 'source'
+    if m == 'dctta' and not r.get('cfg'):
+        return 'dctta'
+    if m == 'transfer' and (r.get('tag') or '') == tag and (num(r.get('eval_alpha')) or 1.0) == 1.0:
+        return 'ours'
+    return None
 
 
-def sort_key(lbl):
-    for i, p in enumerate(ORDER):
-        if lbl.startswith(p):
-            return (i, lbl)
-    return (len(ORDER), lbl)
-
-
-def _rows_for(summary_rows, setting, backbone, cols):
-    out = []
-    for r in summary_rows:
-        if r['source'] != setting or r['target'] not in cols or r.get('regime') != 'transductive':
+def collect(summary, tag):
+    """{(row, backbone, setting, target): (psnr, ssim, std, n)}; identity rows are backbone '*'."""
+    out = {}
+    for r in summary:
+        k = row_key(r, tag)
+        if k is None:
             continue
-        if r['method'] == 'identity' or (r.get('backbone') or 'promptir') == backbone:
-            out.append(r)
+        bb = '*' if k == 'input' else (r.get('backbone') or 'promptir')
+        p, s, sd = metric(r)
+        if p is not None:
+            out[(k, bb, r['source'], r['target'])] = (p, s, sd, int(float(r.get('n_seeds') or 1)))
     return out
 
 
-def build(summary_rows, setting, backbone, cols=None):
-    if cols is None:
-        cols = TESTS[setting] + [v for v in VALS[setting] if v not in TESTS[setting]]
-        known = (set(cols) | set(OPEN_TESTS) | set(OPEN_VALS) | {'LOLv2', 'LOLv2_val', 'RealBlurJ', 'RealBlurJ_val', 'RealBlurR'}
-                 | set(NOSHIFT['3task']) | set(NOSHIFT['5task']))
-        cols = cols + sorted({r['target'] for r in summary_rows if r['source'] == setting
-                              and (r.get('backbone') or 'promptir') == backbone and r['target'] not in known})
-    table = OrderedDict()   # label -> {target: (mean, std, n)}
-    for r in _rows_for(summary_rows, setting, backbone, cols):
-        lbl = label(r)
-        cell = table.setdefault(lbl, {})
-        if r['target'] in cell:  # two configs collapse to one label: keep them apart
-            lbl = f"{lbl} [{r['cfg']}]"
-            cell = table.setdefault(lbl, {})
-        m, sd, fb = value(r)
-        cell[r['target']] = (m, sd, int(float(r['n_seeds'])), fb)
-    sota_path = os.path.join(REPO, 'configs', f'sota_{setting}.csv')
-    if os.path.exists(sota_path):
-        with open(sota_path) as f:
-            for s in csv.DictReader(f):
-                if s['method'] == NAMES[backbone]:
-                    table['Reported (co-author)'] = {t: (num(v), None, 1) for t, v in s.items() if t in cols}
-    rows = sorted(table.items(), key=lambda kv: sort_key(kv[0]))
-    return cols, rows
+def cell(v, ssim=False, std=False, bold=False):
+    if v is None:
+        return ''
+    p, s, sd, n = v
+    txt = f"{p:.2f}" + (f"±{sd:.2f}" if std and n > 1 and sd else '') + (f"/{s:.4f}" if ssim and s is not None else '')
+    return f"**{txt}**" if bold else txt
 
 
-def _is_input(lbl):
-    return lbl.startswith('Input')
-
-
-def _avg(cell, tests):
-    tv = [cell[c][0] for c in tests if c in cell and cell[c][0] is not None]
-    return f"{sum(tv) / len(tv):.2f}" if len(tv) == len(tests) else ''
-
-
-def render(cols, rows, setting, tests=None):
-    tests = tests or TESTS[setting]
-    best = {}
-    for c in cols:
-        vals = [cell[c][0] for lbl, cell in rows if c in cell and cell[c][0] is not None and not _is_input(lbl)]
-        best[c] = max(vals) if vals else None
-    head = ['Method'] + [SHORT.get(c, c) for c in cols] + ['Avg test']
+def main_table(vals, setting, cols, args):
+    head = ['Method'] + [SHORT.get(c, c) for c in cols] + ['Avg']
     lines = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)]
-    for lbl, cell in rows:
-        out = [lbl]
-        for c in cols:
-            if c not in cell or cell[c][0] is None:
-                out.append('')
-                continue
-            m, sd, n = cell[c][:3]
-            txt = f"{m:.2f}" + (f"±{sd:.2f}" if n > 1 and sd else '') + ('†' if len(cell[c]) > 3 and cell[c][3] else '')
-            out.append(f"**{txt}**" if best[c] is not None and abs(m - best[c]) < 1e-9 and not _is_input(lbl) else txt)
-        out.append(_avg(cell, tests))
-        lines.append('| ' + ' | '.join(out) + ' |')
-    return '\n'.join(lines)
-
-
-def summary_table(summary, args):
-    head = ['Setting', 'Backbone', 'Source', 'Source x2', 'Ours mix 0.5', 'Ours mix 1', 'Best ours - source',
-            'Ours > source (mix 1)']
-    lines = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)]
-    for setting in ('3task', '5task'):
-        tests = TESTS[setting]
-        for bb in NAMES:
-            cols = {}
-            for r in _rows_for(summary, setting, bb, tests):
-                key = None
-                if r['method'] == 'source':
-                    key = 'src'
-                elif r['method'] == 'flow' and num(r['ext_alpha']) == 1 and int(float(r['n_apply'])) == 2:
-                    key = 'x2'
-                elif (r['method'] == 'transfer' and (r.get('tag') or '') == args.tag
-                      and (not args.families or r['families'] == args.families)
-                      and (r.get('exposure_match') or 'fit') == args.exposure_match):
-                    key = f"ours{num(r.get('eval_alpha')) or 1.0:g}"
-                if key:
-                    cols.setdefault(key, {})[r['target']] = (value(r)[0], None, 1)
-            if 'src' not in cols:
-                continue
-            avg = {k: _avg(v, tests) for k, v in cols.items()}
-            src, o1 = cols['src'], cols.get('ours1', {})
-            both = [t for t in tests if t in o1 and t in src and o1[t][0] is not None and src[t][0] is not None]
-            n_win = sum(o1[t][0] > src[t][0] for t in both)
-            best = [float(avg[k]) for k in ('ours0.5', 'ours1') if avg.get(k)]
-            delta = f"{max(best) - float(avg['src']):+.2f}" if best and avg.get('src') else ''
-            lines.append('| ' + ' | '.join([setting, NAMES[bb], avg.get('src', ''), avg.get('x2', ''),
-                                            avg.get('ours0.5', ''), avg.get('ours1', ''), delta,
-                                            f"{n_win}/{len(both)}" if both else '']) + ' |')
-    return '\n'.join(lines)
-
-
-def paper_table(summary, setting, args, tests=None):
-    """Literature layout: test sets as columns; per backbone three rows (source, + DCTTA, + ours at --alpha)."""
-    tests = tests or (TESTS[setting] + [t for t in args.extra if t not in TESTS[setting]])
-    head = ['Method'] + [SHORT.get(t, t) for t in tests] + ['Avg']
-    lines = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)]
-    for bb in NAMES:
-        rows = {'src': {}, 'dctta': {}, 'ours': {}}
-        for r in _rows_for(summary, setting, bb, tests):
-            if r['method'] == 'source':
-                key = 'src'
-            elif r['method'] == 'dctta':
-                key = 'dctta'
-            elif (r['method'] == 'transfer' and (r.get('tag') or '') == args.tag
-                  and abs((num(r.get('eval_alpha')) or 1.0) - args.alpha) < 1e-9):
-                key = 'ours'
-            else:
-                continue
-            v = value(r)[0]
-            if args.ssim and num(r.get('ssim_mean')) is not None:
-                v = (v, num(r['ssim_mean']))
-            rows[key][r['target']] = v
-        if not rows['src']:
+    if args.input:
+        inp = [vals.get(('input', '*', setting, c)) or vals.get(('input', '*', '3task', c))
+               or vals.get(('input', '*', '5task', c)) for c in cols]
+        avg = sum(v[0] for v in inp) / len(inp) if all(inp) else None
+        lines.append('| Input | ' + ' | '.join(cell(v) for v in inp) + f" | {'' if avg is None else f'{avg:.2f}'} |")
+    for bb, name in NAMES.items():
+        if not any(('source', bb, setting, c) in vals for c in cols):
             continue
-        for key, name in (('src', NAMES[bb]), ('dctta', f"{NAMES[bb]} + DCTTA"), ('ours', f"{NAMES[bb]} + Ours")):
-            cell = rows[key]
-            out = [name]
-            for t in tests:
-                v = cell.get(t)
-                if v is None:
-                    out.append('')
-                    continue
-                p = v[0] if isinstance(v, tuple) else v
-                best = max((rows[k][t][0] if isinstance(rows[k][t], tuple) else rows[k][t])
-                           for k in rows if t in rows[k])
-                txt = f"{p:.2f}" + (f"/{v[1]:.3f}" if isinstance(v, tuple) else '')
-                out.append(f"**{txt}**" if abs(p - best) < 1e-9 else txt)
-            ps = [cell[t][0] if isinstance(cell[t], tuple) else cell[t] for t in tests if t in cell]
-            out.append(f"{sum(ps) / len(ps):.2f}" if len(ps) == len(tests) else '')
+        rows = [('source', name), ('dctta', f'{name} + DCTTA'), ('ours', f'{name} + Ours')]
+        best = {c: max((vals[(k, bb, setting, c)][0] for k, _ in rows if (k, bb, setting, c) in vals),
+                       default=None) for c in cols}
+        for k, label in rows:
+            vs = [vals.get((k, bb, setting, c)) for c in cols]
+            out = [label] + [cell(v, args.ssim, args.std, v is not None and abs(v[0] - best[c]) < 1e-9)
+                             for v, c in zip(vs, cols)]
+            out.append(f"{sum(v[0] for v in vs) / len(vs):.2f}" if all(vs) else '')
             lines.append('| ' + ' | '.join(out) + ' |')
     return '\n'.join(lines)
 
 
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument('root', help='folder holding summary.csv (tools/aggregate.py output)')
-    p.add_argument('--alpha', type=float, default=1.0, help='paper tables: weight mix of our runs')
-    p.add_argument('--extra', nargs='*', default=[], help='paper tables: extra test columns (e.g. DPDD)')
-    p.add_argument('--ssim', action='store_true', help='paper tables: PSNR/SSIM cells')
-    p.add_argument('--tag', default='F1', help="summary table: our runs' --tag ('' = the untagged v0.1 runs)")
-    p.add_argument('--families', default='', help="summary table: our runs' --families ('' = any)")
-    p.add_argument('--exposure_match', default='camera', help="summary table: our runs' --exposure_match")
-    args = p.parse_args()
-    with open(os.path.join(args.root, 'summary.csv')) as f:
-        summary = list(csv.DictReader(f))
-    for setting in ('3task', '5task'):
-        for bb in NAMES:
-            cols, rows = build(summary, setting, bb)
-            if not any(lbl == 'Source' for lbl, _ in rows):
-                continue
-            md = (f"## {NAMES[bb]} {setting} source -- PSNR (dB)\n\nTest sets, then validation sets "
-                  f"(* O-HAZY is both). Bold = best non-input value per column. Rain sets: luminance PSNR "
-                  f"(BT.601 Y, the deraining convention); others RGB. † = run made before Y-PSNR was recorded (RGB shown).\n\n"
-                  + render(cols, rows, setting))
-            path = os.path.join(args.root, f'table_{setting}_{bb}.md')
-            with open(path, 'w') as f:
-                f.write(md + '\n')
-            print(md + '\n')
-            print(f"-> {path}\n")
-    # open-set: 3-task sources (never trained on blur / low-light) on the 5-task-only families
-    for bb in NAMES:
-        cols, rows = build(summary, '3task', bb, cols=OPEN_TESTS + OPEN_VALS)
-        if not any(lbl == 'Source' for lbl, _ in rows):
+def runs_index(runs, tags):
+    """{(tag or method, backbone, setting, target, seed): psnr} from runs.csv (single-seed controls / oracle)."""
+    out = {}
+    for r in runs:
+        if r['method'] in ('source', 'identity'):
+            key = r['method']
+        elif r['method'] == 'transfer' and (r.get('tag') or '') in tags and (num(r.get('eval_alpha')) or 1.0) == 1.0:
+            key = r['tag']
+        else:
             continue
-        ref = [r for r in _rows_for(summary, '5task', bb, OPEN_TESTS + OPEN_VALS) if r['method'] == 'source']
-        if ref:
-            rows.append(('Reference: 5-task source (trained on blur, low-light)',
-                         {r['target']: value(r)[:2] + (1,) for r in ref}))
-        md = (f"## {NAMES[bb]} 3-task source on unseen families (open set) -- PSNR (dB)\n\n"
-              f"The 3-task model never saw blur or low-light; the reference row is the same backbone trained on "
-              f"them (5-task).\n\n" + render(cols, rows, '3task', tests=OPEN_TESTS))
-        path = os.path.join(args.root, f'table_open_{bb}.md')
-        with open(path, 'w') as f:
-            f.write(md + '\n')
-        print(md + '\n')
-        print(f"-> {path}\n")
-    for setting in ('3task', '5task'):
-        md = (f"## {setting} -- PSNR (dB){'/SSIM' if args.ssim else ''}, test sets; Ours = {args.tag}, mix {args.alpha:g}. "
-              f"Rain: BT.601 Y-PSNR; others RGB. Bold = best of the three rows per backbone.\n\n"
-              + paper_table(summary, setting, args))
-        path = os.path.join(args.root, f'table_paper_{setting}.md')
-        with open(path, 'w') as f:
-            f.write(md + '\n')
-        print(md + '\n')
-        print(f"-> {path}\n")
-        if any(r['target'] in NOSHIFT[setting] and r['source'] == setting and r['method'] != 'identity'
-               and r.get('regime') == 'transductive' for r in summary):
-            md = (f"## {setting} NO-SHIFT sets (each source's own test distributions) -- PSNR (dB); Ours = {args.tag}, "
-                  f"mix {args.alpha:g}\n\n" + paper_table(summary, setting, args, tests=NOSHIFT[setting]))
-            path = os.path.join(args.root, f'table_paper_noshift_{setting}.md')
-            with open(path, 'w') as f:
-                f.write(md + '\n')
-            print(md + '\n')
-            print(f"-> {path}\n")
-    md = (f"## Across backbones -- Avg test PSNR (dB)\n\nOurs = tag '{args.tag}', families {args.families}, "
-          f"exposure match {args.exposure_match}.\n\n" + summary_table(summary, args))
-    path = os.path.join(args.root, 'table_backbones.md')
+        p = metric(r, prefix=None)[0]
+        if p is not None:
+            out[(key, r.get('backbone') or 'promptir', r['source'], r['target'], str(r.get('seed')))] = p
+    return out
+
+
+def delta_table(idx, rows, setting, cols, seed, bb='promptir'):
+    head = ['Variant'] + [SHORT.get(c, c) for c in cols] + ['Mean change']
+    lines = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)]
+    src = [next((v for k, v in idx.items() if k[:4] == ('source', bb, setting, c)), None) for c in cols]
+    lines.append('| Pretrained | ' + ' | '.join('' if s is None else f"{s:.2f}" for s in src) + ' | |')
+    for tag, label in rows:
+        vs = [idx.get((tag, bb, setting, c, str(seed))) for c in cols]
+        if not any(v is not None for v in vs):
+            continue
+        d = [None if v is None or s is None else v - s for v, s in zip(vs, src)]
+        out = [label] + ['' if v is None else f"{v:.2f} ({dv:+.2f})" for v, dv in zip(vs, d)]
+        out.append(f"{sum(d) / len(d):+.2f}" if all(x is not None for x in d) else '')
+        lines.append('| ' + ' | '.join(out) + ' |')
+    return '\n'.join(lines)
+
+
+def cost_table(summary, tag):
+    lines = ['| Backbone | Method | Adapt time (s / test set) | Peak memory (GB) | Adapted parameters |',
+             '|---|---|---|---|---|']
+    for bb, name in NAMES.items():
+        for m, label in (('dctta', 'DCTTA'), ('ours', 'Ours')):
+            rs = [r for r in summary if row_key(r, tag) == m and (r.get('backbone') or 'promptir') == bb
+                  and r['source'] == '5task' and r['target'] in TESTS['5task']]
+            if not rs:
+                continue
+            mean = lambda k: sum(num(r.get(k + '_mean')) or 0 for r in rs) / len(rs)  # noqa: E731
+            lines.append(f"| {name} | {label} | {mean('adapt_time_s'):.0f} | {mean('peak_mem_gb'):.1f} | "
+                         f"{mean('n_params_adapted'):,.0f} |")
+    return '\n'.join(lines)
+
+
+def write(root, name, md):
+    path = os.path.join(root, name)
     with open(path, 'w') as f:
         f.write(md + '\n')
-    print(md + '\n')
-    print(f"-> {path}")
+    print(md + f"\n\n-> {path}\n")
+
+
+def read_csv(path):
+    with open(path) as f:
+        return list(csv.DictReader(f))
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument('root', help='results folder with summary.csv / runs.csv (tools/aggregate.py)')
+    p.add_argument('--oracle', default=None, help='results folder of the oracle analysis (run.sh oracle)')
+    p.add_argument('--tag', default='F1', help="our runs' --tag")
+    p.add_argument('--seed', type=int, default=23, help='seed of the single-seed control / oracle runs')
+    p.add_argument('--input', action='store_true')
+    p.add_argument('--ssim', action='store_true')
+    p.add_argument('--std', action='store_true')
+    args = p.parse_args()
+    summary = read_csv(os.path.join(args.root, 'summary.csv'))
+    vals = collect(summary, args.tag)
+    note = "Rain sets: BT.601 Y-PSNR; others RGB PSNR. Bold: best of the three rows per backbone."
+    for s in ('3task', '5task'):
+        write(args.root, f'table_main_{s}.md', f"## {s} test sets -- PSNR (dB)\n\n{note}\n\n"
+              + main_table(vals, s, TESTS[s], args))
+        write(args.root, f'table_noshift_{s}.md', f"## {s} no-shift sets (the sources' own test distributions)"
+              f" -- PSNR (dB)\n\n{note}\n\n" + main_table(vals, s, NOSHIFT[s], args))
+    runs = read_csv(os.path.join(args.root, 'runs.csv'))
+    idx = runs_index(runs, {t for t, _ in CONTROLS})
+    write(args.root, 'table_controls.md', f"## Controls, PromptIR 3-task (seed {args.seed}) -- PSNR (dB), change vs the"
+          f" pretrained model\n\n" + delta_table(idx, CONTROLS, '3task', CONTROL_SETS, args.seed))
+    aidx = runs_index(runs, {t for t, _ in ABLATION})
+    for s in ('3task', '5task'):
+        write(args.root, f'table_ablation_{s}.md', f"## Ablation, PromptIR {s} (seed {args.seed}) -- PSNR (dB), change"
+              f" vs the pretrained model\n\n" + delta_table(aidx, ABLATION, s, TESTS[s], args.seed))
+    if args.oracle:
+        oidx = runs_index(read_csv(os.path.join(args.oracle, 'runs.csv')), {t for t, _ in ORACLE_ROWS})
+        write(args.root, 'table_oracle.md', f"## Oracle analysis, PromptIR 5-task (seed {args.seed}) -- PSNR (dB), "
+              f"change vs the pretrained model\n\n" + delta_table(oidx, ORACLE_ROWS, '5task', ORACLE_SETS, args.seed))
+    write(args.root, 'table_cost.md', "## Cost on the 5-task test sets (mean over sets)\n\n" + cost_table(summary, args.tag))
 
 
 if __name__ == '__main__':

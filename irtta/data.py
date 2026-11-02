@@ -1,4 +1,5 @@
-"""Dataset registry, evaluation datasets (incl. synthetic-noise source sets) and patch cropping.
+"""Datasets: the registry (``configs/datasets.json``), target patches for adaptation, full-image evaluation sets,
+synthetic-noise sets, the clean content bank and the real-pair bank of the oracle analysis.
 
 Datasets are referred to by name through ``configs/datasets.json``:
 
@@ -12,6 +13,7 @@ A set without ``lq`` but with ``noise_sigma`` gets its degraded images synthesis
 """
 import json
 import os
+import random
 import zlib
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -22,10 +24,124 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision.transforms import ToTensor
 
-from dctta.data import PairedImageDataset, crop_to_multiple, list_images
-
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_REGISTRY = os.path.join(REPO_ROOT, 'configs', 'datasets.json')
+IMG_EXTS = ('.png', '.jpg', '.jpeg')
+BANK_EXTS = ('.png', '.jpg', '.jpeg', '.bmp')
+
+
+# ---------------------------------------------------------------------------- #
+# image folders: adaptation patches and full-image pairs
+# ---------------------------------------------------------------------------- #
+
+
+def list_images(d):
+    return sorted([f for f in os.listdir(d) if f.lower().endswith(IMG_EXTS)])
+
+
+def load_rgb(path, max_side=None):
+    """Load an image as HxWx3 uint8. If ``max_side`` is set and the longer side exceeds it, downsample
+    (bicubic, aspect ratio kept) so the longer side equals ``max_side``. LQ and GT of a pair have the
+    same size, so they are resized identically. ``max_side=None`` is the original behaviour."""
+    img = Image.open(path).convert('RGB')
+    if max_side and max(img.size) > max_side:
+        s = max_side / max(img.size)
+        img = img.resize((round(img.width * s), round(img.height * s)), Image.BICUBIC)
+    return np.array(img)
+
+
+def crop_to_multiple(image, base=16):
+    """Centre-crop an HxWxC array to a multiple of ``base`` (PromptIR's ``crop_img``)."""
+    h, w = image.shape[0], image.shape[1]
+    crop_h, crop_w = h % base, w % base
+    return image[crop_h // 2:h - crop_h + crop_h // 2, crop_w // 2:w - crop_w + crop_w // 2, :]
+
+
+class AdaptationPatchDataset(Dataset):
+    """Random ``patch_size`` crops of the degraded target images.
+
+    Returns ``(filename, degraded_patch, clean_patch)`` for API compatibility with the original
+    loop, but note: the clean patch is **never used** by the adaptation (it is only moved to the
+    GPU and discarded), and in the original the degraded and clean crops were drawn with two
+    independent ``randint`` calls, so they are not even aligned. Pass ``gt_dir=None`` to skip GT.
+
+    ``seed``: the original constructor re-seeded ``random``/``numpy``/``torch`` **globally** with
+    42 (after the script had already seeded everything with 23). This changes the RNG stream that
+    initialises the RDDM generator, so it is kept (``seed=42``) for reproducibility of the
+    reference runs; pass ``seed=None`` to disable the side effect.
+    """
+
+    def __init__(self, lq_dir, gt_dir=None, patch_size=320, seed=42, max_side=None, names=None):
+        super().__init__()
+        self.lq_dir, self.gt_dir, self.patch_size = lq_dir, gt_dir, patch_size
+        self.max_side = max_side
+        self.names = names  # optional fixed subset of LQ file names (GT matched by the same names)
+        if seed is not None:
+            random.seed(seed)
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+        self.lq_list = list_images(lq_dir) if names is None else list(names)
+        self.gt_list = (list_images(gt_dir) if names is None else list(names)) if gt_dir is not None else None
+        if self.gt_list is not None:
+            assert len(self.lq_list) == len(self.gt_list), \
+                f"LQ ({len(self.lq_list)}) and GT ({len(self.gt_list)}) counts differ"
+        self.to_tensor = ToTensor()
+
+    def _crop_patch(self, img):
+        H, W = img.shape[:2]
+        s = self.patch_size
+        if H < s or W < s:   # smaller image (e.g. some SOTS-Outdoor scenes): largest 16-aligned square that fits
+            s = min(H // 16 * 16, W // 16 * 16)
+            if s < 16:
+                raise ValueError(f"image too small: {H}x{W}, patch={self.patch_size}")
+        ind_H = random.randint(0, H - s)
+        ind_W = random.randint(0, W - s)
+        return img[ind_H:ind_H + s, ind_W:ind_W + s]
+
+    def __len__(self):
+        return len(self.lq_list)
+
+    def __getitem__(self, idx):
+        filename = self.lq_list[idx]
+        degrad_img = load_rgb(os.path.join(self.lq_dir, filename), self.max_side)
+        degrad_patch = self.to_tensor(self._crop_patch(degrad_img))
+        if self.gt_list is None:
+            return filename, degrad_patch, torch.zeros(0)
+        clean_img = load_rgb(os.path.join(self.gt_dir, self.gt_list[idx]), self.max_side)
+        clean_patch = self.to_tensor(self._crop_patch(clean_img))
+        return filename, degrad_patch, clean_patch
+
+
+class PairedImageDataset(Dataset):
+    """Full-resolution (LQ, GT) pairs matched by file name, centre-cropped to a multiple of ``base``."""
+
+    def __init__(self, lq_dir, gt_dir, base=16, names=None, max_side=None):
+        super().__init__()
+        self.lq_dir, self.gt_dir, self.base = lq_dir, gt_dir, base
+        self.max_side = max_side
+        lq_names, gt_names = list_images(lq_dir), set(list_images(gt_dir))
+        self.names = [n for n in lq_names if n in gt_names]
+        if names is not None:  # restrict to a given list (probe / subset), keeping the given order
+            available = set(self.names)
+            missing = [n for n in names if n not in available]
+            if missing:
+                raise ValueError(f"{len(missing)} requested images not found in {lq_dir}, e.g. {missing[:3]}")
+            self.names = list(names)
+        if not self.names:
+            raise ValueError("no paired images: LQ and GT file names must match")
+        self.to_tensor = ToTensor()
+
+    def __getitem__(self, idx):
+        name = self.names[idx]
+        lq = crop_to_multiple(load_rgb(os.path.join(self.lq_dir, name), self.max_side), self.base)
+        gt = crop_to_multiple(load_rgb(os.path.join(self.gt_dir, name), self.max_side), self.base)
+        return name, self.to_tensor(lq), self.to_tensor(gt)
+
+    def __len__(self):
+        return len(self.names)
+
 
 
 @dataclass
@@ -79,15 +195,6 @@ def resolve_spec(name, registry=None):
 def spec_from_dirs(lq_dir, gt_dir, name=None):
     name = name or os.path.basename(os.path.dirname(os.path.normpath(lq_dir))) or 'custom'
     return DataSpec(name=name, lq=lq_dir, gt=gt_dir)
-
-
-def source_sets(source_tag, registry=None):
-    """Names of the source-task in-distribution test sets for a source setting ('3task' / '5task')."""
-    reg = registry if registry is not None else load_registry()
-    table = reg.get('_source_sets', {})
-    if source_tag not in table:
-        raise KeyError(f"no '_source_sets' entry for source '{source_tag}' in the registry")
-    return list(table[source_tag])
 
 
 def evenly_spaced(names, n):
@@ -160,17 +267,6 @@ def available_names(spec: DataSpec) -> List[str]:
     return [n for n in list_images(spec.lq) if n in gt]
 
 
-def typical_long_side(spec, n=64):
-    """Median longer side (pixels, after the registry's ``max_side``) of up to ``n`` evenly spaced target images."""
-    names = evenly_spaced(available_names(spec), n)
-    folder = spec.lq if spec.lq is not None else spec.gt
-    sides = []
-    for nm in names:
-        with Image.open(os.path.join(folder, nm)) as im:
-            sides.append(max(im.size) if not spec.max_side else min(max(im.size), spec.max_side))
-    return int(np.median(sides)) if sides else None
-
-
 def make_eval_dataset(spec: DataSpec, base=16, names=None, max_images=None):
     """Full-image (name, lq, gt) dataset; ``max_images`` takes an evenly spaced deterministic subset."""
     if names is None and max_images:
@@ -182,28 +278,9 @@ def make_eval_dataset(spec: DataSpec, base=16, names=None, max_images=None):
     return PairedImageDataset(spec.lq, spec.gt, base=base, names=names, max_side=spec.max_side)
 
 
-def random_crops(img, size, n, generator, multiple=16):
-    """``n`` random ``size``x``size`` crops of a 1xCxHxW tensor (positions from ``generator``, a CPU
-    ``torch.Generator``, so the global RNG is untouched). If the image is smaller than ``size`` the
-    crop is the largest ``multiple``-aligned square that fits."""
-    _, _, H, W = img.shape
-    s = min(size, (H // multiple) * multiple, (W // multiple) * multiple)
-    if s <= 0:
-        raise ValueError(f"image {H}x{W} too small for crops aligned to {multiple}")
-    crops = []
-    for _ in range(n):
-        i = int(torch.randint(0, H - s + 1, (1,), generator=generator))
-        j = int(torch.randint(0, W - s + 1, (1,), generator=generator))
-        crops.append(img[..., i:i + s, j:j + s])
-    return torch.cat(crops, 0)
-
-
 # ---------------------------------------------------------------------------- #
 # Clean content bank for transfer TTA
 # ---------------------------------------------------------------------------- #
-IMG_EXTS = ('.png', '.jpg', '.jpeg', '.bmp')
-
-
 def resolve_bank(bank=None, registry=None):
     """``bank``: a folder path, a registry key under ``_banks``, or None for ``_banks['default']``."""
     reg = registry if registry is not None else load_registry()
@@ -223,31 +300,22 @@ class CleanBank:
     shorter side is below ``min_side`` are skipped. Crops use a caller-supplied CPU ``torch.Generator``.
     """
 
-    def __init__(self, root, max_images=300, min_side=192, long_side=None):
-        """``long_side``: resize every image (anti-aliased bicubic, never up) so its longer side is about this many
-        pixels -- the target images' typical size, so a crop covers a similar field of view as a target patch and
-        the operators' kernel / streak sizes keep their scale relative to the content."""
+    def __init__(self, root, max_images=300, min_side=192):
         paths = []
         for dirpath, _, files in os.walk(root):
-            paths += [os.path.join(dirpath, f) for f in files if f.lower().endswith(IMG_EXTS)]
+            paths += [os.path.join(dirpath, f) for f in files if f.lower().endswith(BANK_EXTS)]
         paths = sorted(paths)
         if not paths:
             raise ValueError(f"clean bank {root} contains no images (set _banks.default in configs/datasets.json "
                              f"to your DIV2K_train_HR folder, or pass --bank)")
         self.images = []
         for p in evenly_spaced(paths, max_images if max_images and max_images > 0 else len(paths)):
-            im = Image.open(p).convert('RGB')
-            if long_side:
-                f = long_side / max(im.size)
-                if f < 1:
-                    im = im.resize((max(1, round(im.size[0] * f)), max(1, round(im.size[1] * f))), Image.BICUBIC)
-            img = np.array(im)
+            img = np.array(Image.open(p).convert('RGB'))
             if min(img.shape[:2]) >= min_side:
                 self.images.append(img)
         if not self.images:
             raise ValueError(f"no image in {root} has a shorter side >= {min_side}")
         self.root = root
-        self.long_side = long_side
 
     def __len__(self):
         return len(self.images)

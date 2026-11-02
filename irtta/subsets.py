@@ -1,22 +1,15 @@
-"""Parameter subsets for adaptation, selected by name.
+"""Parameter subsets for adaptation (``--subset``):
 
-``--subset`` is a ``+``-joined list of parts:
+| subset      | parameters (any backbone)                                                                       |
+|-------------|-------------------------------------------------------------------------------------------------|
+| ``lora<r>`` | ours: zero-init LoRA of rank r on every dense 1x1 convolution with min(in, out) > r (the channel |
+|             | projections: qkv / project_in / project_out in Restormer-family blocks)                         |
+| ``full``    | DCTTA's rule: top-level prefix filter (``irtta.backbones.TRAIN_PREFIXES[backbone]``; PromptIR:   |
+|             | prompt / encoder / decoder, identical to the release) + ``weight`` / ``bias`` leaves             |
+| ``all``     | every parameter (the random-initialisation control)                                             |
+| ``none``    | nothing (the pretrained model)                                                                  |
 
-| part            | parameters (any backbone)                                                                  |
-|-----------------|--------------------------------------------------------------------------------------------|
-| ``ln``          | every LayerNorm affine (Restormer-style ``*_LayerNorm``, NAFNet ``LayerNorm2d``, nn.LayerNorm) |
-| ``lora<r>``     | zero-init LoRA of rank r on every dense 1x1 convolution with min(in, out) > r (the channel   |
-|                 | projections: qkv / project_in / project_out in Restormer-family blocks, conv1/3/4/5 in NAFNet) |
-| ``full``        | DCTTA's rule: top-level prefix filter (``dctta.models.TRAIN_PREFIXES[backbone]``; PromptIR: |
-|                 | prompt/encoder/decoder, bit-identical to the release) + ``weight``/``bias`` leaves          |
-| ``all``         | every parameter                                                                            |
-| ``re:<regex>``  | every parameter whose name matches the regex                                               |
-| ``none``        | nothing (source model)                                                                     |
-
-Only parts every backbone has are offered (the PromptIR-specific prompt-pathway subsets were removed after
-Step 1: the routing softmax is saturated and adapting it changed nothing). LoRA A matrices are drawn from a
-dedicated ``torch.Generator``, so building a subset never touches the global RNG: for a given ``--seed`` every subset sees the same
-patch order and (for DCTTA) the same generator initialisation.
+LoRA A matrices are drawn from a dedicated ``torch.Generator``, so building a subset never touches the global RNG.
 """
 import math
 import re
@@ -27,15 +20,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from dctta.tta import DEFAULT_TRAIN_PREFIXES, collect_params, configure_model
+from .baselines.dctta.tta import DEFAULT_TRAIN_PREFIXES, collect_params, configure_model
 
 
 class LoRAConv1x1(nn.Module):
-    """``base(x) + (alpha / r) * B(A(x))`` for a frozen 1x1 conv; B is zero-initialised.
-
-    ``delta_weight()`` is the effective weight change (out, in, 1, 1), the quantity the anchors act on.
-    ``orig_name`` is the name of the wrapped weight in the *un-injected* model (for Fisher lookup).
-    """
+    """``base(x) + (alpha / r) * B(A(x))`` for a frozen 1x1 conv; B is zero-initialised (the adapted model starts
+    as the pretrained one). ``orig_name``: the name of the wrapped weight in the un-injected model."""
 
     def __init__(self, base: nn.Conv2d, rank, alpha, generator, orig_name):
         super().__init__()
@@ -51,9 +41,6 @@ class LoRAConv1x1(nn.Module):
         a = (torch.rand(rank, base.in_channels, generator=generator) * 2 - 1) * bound
         self.lora_A = nn.Parameter(a.to(device=w.device, dtype=w.dtype))
         self.lora_B = nn.Parameter(torch.zeros(base.out_channels, rank, device=w.device, dtype=w.dtype))
-
-    def delta_weight(self):
-        return (self.lora_B @ self.lora_A).mul(self.scale)[:, :, None, None]
 
     def forward(self, x):
         z = F.conv2d(x, self.lora_A[:, :, None, None])
@@ -99,18 +86,6 @@ class Subset:
     def n_params(self):
         return int(sum(p.numel() for p in self.params))
 
-    def lora_param_ids(self):
-        return {id(p) for m in self.lora_modules.values() for p in (m.lora_A, m.lora_B)}
-
-
-def _ln_param_names(model):
-    names = set()
-    for mname, m in model.named_modules():
-        if isinstance(m, (nn.LayerNorm, nn.GroupNorm)) or type(m).__name__.endswith(('_LayerNorm', 'LayerNorm2d')):
-            for pname, _ in m.named_parameters(recurse=False):
-                names.add(f"{mname}.{pname}")
-    return names
-
 
 def apply_subset(model, spec, *, lora_alpha=None, lora_scope=None, train_prefixes=DEFAULT_TRAIN_PREFIXES, seed=0,
                  logger=None):
@@ -143,13 +118,8 @@ def apply_subset(model, spec, *, lora_alpha=None, lora_scope=None, train_prefixe
             continue
         if part == 'all':
             selected |= set(named)
-        elif part == 'ln':
-            selected |= _ln_param_names(model)
         elif re.fullmatch(r'lora(\d*)', part):
             selected |= {n for n in named if n.endswith('lora_A') or n.endswith('lora_B')}
-        elif part.startswith('re:'):
-            rx = re.compile(part[3:])
-            selected |= {n for n in named if rx.search(n)}
         else:
             raise ValueError(f"unknown subset part '{part}' in '{spec}'")
 

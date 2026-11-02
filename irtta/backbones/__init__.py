@@ -1,14 +1,13 @@
 """Backbone registry: ``build_model(name, ckpt, **opts) -> nn.Module`` with ``model(x) -> restored``.
 
 Every backbone is the authors' architecture with their parameter names, so the officially released
-checkpoints load directly (Lightning ``.ckpt`` with ``net.``-prefixed keys, or a plain state_dict such
-as the one ``adapt.py --save_ckpt`` writes). The released variant (3 vs 5 tasks, tiny vs small, ...)
+checkpoints load directly (Lightning ``.ckpt`` with ``net.``-prefixed keys, or a plain state_dict). The released variant (3 vs 5 tasks, tiny vs small, ...)
 is read off the checkpoint, so callers only pass the backbone name and the checkpoint path.
 
 =========  ==================================================  =====================================
 name       released checkpoints                                notes
 =========  ==================================================  =====================================
-promptir   model.ckpt (3-task), epoch=80.ckpt (5-task)          unchanged DCTTA path
+promptir   model.ckpt (3-task), epoch=80.ckpt (5-task)          verbatim
 adair      adair3d.ckpt / adair5d.ckpt                          verbatim
 bioir      BioIR3D.ckpt / BioIR5D.ckpt                          verbatim
 moceir     <id>_AIO3/last.ckpt, <id>_AIO5/last.ckpt              MoCE_IR (dim 48) / MoCE_IR_S (dim 32)
@@ -23,14 +22,12 @@ r2r        train_ckpt_{3D,5D}_finetune/last.ckpt               + its degradation
 
 ``TRAIN_PREFIXES`` is the per-backbone analogue of DCTTA's released PromptIR rule (adapt the encoder
 and decoder levels plus the degradation-conditioning modules; keep the bottleneck, refinement, up/down
-samplers and in/out convolutions frozen). It is only the default of ``adapt.py --train_prefixes``.
+samplers and in/out convolutions frozen): the parameters the DCTTA baseline adapts (``--subset full``).
 """
 import ast
 import glob
 import logging
 import os
-
-import torch
 
 __all__ = ['BACKBONES', 'TRAIN_PREFIXES', 'build_model', 'load_state_dict_file', 'parse_backbone_opts']
 
@@ -60,6 +57,7 @@ def parse_backbone_opts(items):
 
 def load_state_dict_file(path):
     """State dict from a Lightning checkpoint (``net.`` prefix stripped) or a plain/our saved state_dict."""
+    import torch
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     state_dict = checkpoint["state_dict"] if isinstance(checkpoint, dict) and "state_dict" in checkpoint else checkpoint
     return {k[4:] if k.startswith("net.") else k: v for k, v in state_dict.items()}
@@ -94,17 +92,33 @@ def _find_r2r_bank(ckpt_path, num_classes):
     return None
 
 
+def load_promptir_checkpoint(model, ckpt_path, logger=None):
+    """Load a PromptIR Lightning checkpoint (keys prefixed with ``net.``) into ``model``; ``strict=False`` (the
+    Lightning checkpoint may carry loss-module keys), but anything missing/unexpected is reported."""
+    import torch
+    checkpoint = torch.load(ckpt_path, map_location="cpu")
+    state_dict = checkpoint["state_dict"] if "state_dict" in checkpoint else checkpoint
+    state_dict = {k.replace("net.", "", 1) if k.startswith("net.") else k: v for k, v in state_dict.items()}
+    result = model.load_state_dict(state_dict, strict=False)
+    log = (logger or logging.getLogger(__name__))
+    if result.missing_keys:
+        log.warning(f"checkpoint {ckpt_path}: {len(result.missing_keys)} missing keys, e.g. {result.missing_keys[:5]}")
+    if result.unexpected_keys:
+        log.warning(f"checkpoint {ckpt_path}: {len(result.unexpected_keys)} unexpected keys, "
+                    f"e.g. {result.unexpected_keys[:5]}")
+    return model
+
+
 def build_model(name, ckpt=None, logger=None, **opts):
     """Instantiate backbone ``name`` and load ``ckpt`` (architecture only if ``ckpt`` is None).
 
-    ``opts`` are backbone-specific (see the module docstring); for promptir this is exactly the
-    original ``PromptIR(decoder=True)`` + ``load_promptir_checkpoint`` sequence (same RNG use).
+    ``opts`` are backbone-specific (see the module docstring); for promptir this is the original
+    ``PromptIR(decoder=True)`` + checkpoint loading sequence (same RNG use as the PromptIR / DCTTA code).
     """
     name = name.lower()
     log = logger or logging.getLogger(__name__)
     if name == 'promptir':
         from .promptir import PromptIR
-        from ..utils import load_promptir_checkpoint
         model = PromptIR(decoder=True)
         if ckpt is not None:
             load_promptir_checkpoint(model, ckpt, logger)

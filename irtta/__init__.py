@@ -1,5 +1,6 @@
-"""IR-TTA harness: parameter subsets, anchors, regimes, probes, cost logging and result rows.
+"""Test-time adaptation of all-in-one image restoration models under degradation shift.
 
-The DCTTA reference implementation lives in ``dctta/`` and stays bit-identical to the released code;
-``irtta/`` builds the experiment harness on top of it (see ``run_tta.py``).
+``irtta.degrade`` (physical degradation library), ``irtta.nss`` (the summary statistics for degradation inference),
+``irtta.methods`` (ours and the baselines), ``irtta.backbones`` (six all-in-one models), ``irtta.baselines.dctta``
+(the released DCTTA); ``run_tta.py`` runs one experiment.
 """

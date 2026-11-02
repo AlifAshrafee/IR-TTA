@@ -5,7 +5,7 @@ This is the *active* definition from the original ``net/model.py`` (the file def
 one reproduced here verbatim). Parameter names are unchanged, so the released
 Lightning checkpoints (``model.ckpt`` for the 3-task source, ``epoch=80.ckpt`` for
 the 5-task source) load after stripping the ``net.`` prefix -- see
-``dctta.utils.load_promptir_checkpoint``.
+``irtta.backbones.load_promptir_checkpoint``.
 """
 import numbers
 

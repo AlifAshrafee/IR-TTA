@@ -7,9 +7,7 @@ pretrain/**/*.pth
 pretrain/**/*.pt
 *.png
 *.csv
-!configs/*.csv
 *.pt
 *.txt
 !requirements.txt
-fisher/
 cache/

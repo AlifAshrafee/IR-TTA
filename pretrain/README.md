@@ -12,5 +12,5 @@ pretrain/r2r/train_ckpt_5D_finetune/last.ckpt + save_prompts_5D/last/*.pt     R2
 ```
 
 Lightning checkpoints (`net.`-prefixed keys) load as-is; the variant (3/5-task, tiny/small, MoCE-IR vs -S) is read
-off the checkpoint. Check them with `python tools/check_backbones.py <name>=<ckpt> ...`.
-The RDDM generator of DCTTA has no checkpoint: it is trained from scratch on the target set.
+off the checkpoint. The RDDM generator of the DCTTA baseline has no checkpoint: it is trained from scratch on the
+target set.
