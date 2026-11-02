@@ -27,7 +27,7 @@ TESTS = {'3task': ['Rain100H', 'SOTS_Indoor', 'DenseHaze', 'OHAZY', 'Kodak24_Poi
          '5task': ['Rain100H', 'SOTS_Indoor', 'DenseHaze', 'OHAZY', 'Kodak24_Poisson', 'HIDE', 'LOLv2_Syn', 'DPDD']}
 NOSHIFT = {'3task': ['BSD68_s15', 'BSD68_s25', 'BSD68_s50', 'Rain100L', 'SOTS_Outdoor'],
            '5task': ['BSD68_s25', 'Rain100L', 'SOTS_Outdoor', 'GoPro', 'LOL']}
-CONTROL_SETS = ['Rain100H', 'SOTS_Indoor', 'DenseHaze', 'Kodak24_Poisson']
+CONTROL_SETS = TESTS['3task']
 CONTROLS = [('F1', 'Ours'), ('G1', 'Generic pairs (no inference)'), ('S1', 'Conditioned on another test set'),
             ('Z500', 'Random init, 500 steps'), ('Z5000', 'Random init, 5000 steps'),
             ('ZG500', 'Random init, generic pairs')]

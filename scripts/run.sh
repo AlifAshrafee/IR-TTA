@@ -103,8 +103,9 @@ stage_noshift() {
   done; done
 }
 
-CSETS="Rain100H SOTS_Indoor DenseHaze Kodak24_Poisson"
-declare -A SWAP=( [Rain100H]=SOTS_Indoor [SOTS_Indoor]=Kodak24_Poisson [DenseHaze]=Rain100H [Kodak24_Poisson]=SOTS_Indoor )
+CSETS="Rain100H SOTS_Indoor DenseHaze OHAZY Kodak24_Poisson"
+declare -A SWAP=( [Rain100H]=SOTS_Indoor [SOTS_Indoor]=Kodak24_Poisson [DenseHaze]=Rain100H [OHAZY]=Kodak24_Poisson
+                  [Kodak24_Poisson]=SOTS_Indoor )
 stage_controls() {
   local M T N
   M=$(model_args promptir 3task) || return 0
