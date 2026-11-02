@@ -18,6 +18,7 @@ import csv
 import json
 import math
 import os
+import re
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NAMES = {'promptir': 'PromptIR', 'adair': 'AdaIR', 'bioir': 'Bio-IR', 'moceir': 'MoCE-IR', 'mirage': 'MIRAGE',
@@ -73,8 +74,8 @@ def row_key(r, tag):
         return 'input'
     if m == 'source':
         return 'source'
-    if m == 'dctta' and not r.get('cfg'):
-        return 'dctta'
+    if m == 'dctta' and not re.sub(r'(^|_)bo=.*$', '', r.get('cfg') or ''):
+        return 'dctta'   # the released configuration (backbone options such as MoCE-IR's routing flag allowed)
     if m == 'transfer' and (r.get('tag') or '') == tag and (num(r.get('eval_alpha')) or 1.0) == 1.0:
         return 'ours'
     return None
