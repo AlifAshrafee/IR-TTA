@@ -189,6 +189,8 @@ def main(argv=None):
         method.prepare(loader)
     _sync()
     prepare_time = time.time() - t0
+    if adapts:   # after prepare: DCTTA's TIPS Fisher pass is not adaptation
+        method.track_updates()
     t_steps = adapt(method, loader, args, device) if adapts else 0.0
     peak_adapt = _peak_gb()
 
@@ -220,13 +222,16 @@ def main(argv=None):
         'prepare_time_s': prepare_time, 'adapt_time_s': adapt_time, 'predict_time_s': predict_time,
         'total_time_s': time.time() - t_start, 'peak_mem_adapt_gb': peak_adapt, 'peak_mem_gb': _peak_gb(),
         'n_params_adapted': method.n_params_adapted, 'n_params_effective': method.n_params_effective,
+        'n_params_updated': method.n_params_updated, 'abc_fit_crops': getattr(method, 'fit_crops', None),
         'n_params_total': n_total, 'rng_checksum': checksum, 'git': commit,
         'device': torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'cpu',
     }
     with open(os.path.join(run_dir, 'result.json'), 'w') as f:
         json.dump(result, f, indent=2, default=_json_default)
     logger.info(f"adapt {adapt_time:.1f}s (prepare {prepare_time:.1f}s), predict {predict_time:.1f}s, "
-                f"peak {result['peak_mem_gb']:.2f} GB, adapted params {result['n_params_adapted']:,}  -> {run_dir}")
+                f"peak {result['peak_mem_gb']:.2f} GB, adapted params {result['n_params_adapted']:,} "
+                f"(updated {result['n_params_updated'] if result['n_params_updated'] is not None else '-'})"
+                f"  -> {run_dir}")
     print(f"PSNR {summary['psnr']:.3f}  SSIM {summary['ssim']:.4f}  Y-PSNR {summary['psnr_y']:.3f}")
     return result
 

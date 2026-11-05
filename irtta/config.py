@@ -76,6 +76,13 @@ def get_parser():
     g.add_argument('--nss_color', action=argparse.BooleanOptionalAction, default=True,
                    help='add the dark-channel and saturation statistics to the NSS features')
     g.add_argument('--abc_fit_n', type=int, default=256, help='target crops for the target NSS Gaussian')
+    g.add_argument('--abc_fit_passes', type=int, default=1,
+                   help='max passes over the target set (fresh patches) to reach --abc_fit_n crops; 1 = one pass '
+                        '(2 crops per image)')
+    g.add_argument('--abc_strat', action=argparse.BooleanOptionalAction, default=False,
+                   help='stratified ABC candidates: every family ceil(k/|F|) times instead of k uniform draws')
+    g.add_argument('--abc_content', action=argparse.BooleanOptionalAction, default=False,
+                   help="content-corrected ABC distance: remove the clean crop's NSS offset from the pristine mean")
     g.add_argument('--dark_rule', type=str, default='source', choices=['source', 'none'],
                    help='source: a target patch the pretrained model brightens by >= --dark_ratio is under-exposed')
     g.add_argument('--dark_ratio', type=float, default=1.414, help='brightening factor of --dark_rule (sqrt 2)')
@@ -162,7 +169,8 @@ def get_args(argv=None):
 SEMANTIC_ARGS = OrderedDict([
     ('families', 'fam'), ('bank', 'bk'), ('bank_max', 'bm'), ('bank_patch', 'bp'), ('bank_batch', 'bb'),
     ('exposure_match', 'em'), ('dark_rule', 'drl'), ('dark_ratio', 'drr'), ('dark_action', 'dac'),
-    ('nss_color', 'nc'), ('abc_k', 'abc'), ('abc_fit_n', 'abn'), ('ema_decay', 'ema'), ('iterations', 'it'),
+    ('nss_color', 'nc'), ('abc_k', 'abc'), ('abc_fit_n', 'abn'), ('abc_fit_passes', 'afp'), ('abc_strat', 'ast'),
+    ('abc_content', 'acn'), ('ema_decay', 'ema'), ('iterations', 'it'),
     ('pixel_weight', 'pix'), ('perceptual_weight', 'vgg'), ('lowpass_weight', 'lp'), ('teacher_weight', 'tw'),
     ('beta1', 'b1'), ('beta2', 'b2'), ('tips_ratio', 'tr'), ('gen_train_steps', 'gts'),
     ('gen_sampling_steps', 'gss'), ('gen_lr', 'glr'), ('gen_sum_scale', 'gsc'), ('patch_size', 'ps'),
@@ -171,7 +179,8 @@ SEMANTIC_ARGS = OrderedDict([
 ])
 _ID_REFERENCE = dict(
     families='compose', bank=None, bank_max=300, bank_patch=192, bank_batch=4, exposure_match='fit',
-    dark_rule='none', dark_ratio=1.414, dark_action='skip', nss_color=False, abc_k=1, abc_fit_n=256, iterations=1,
+    dark_rule='none', dark_ratio=1.414, dark_action='skip', nss_color=False, abc_k=1, abc_fit_n=256,
+    abc_fit_passes=1, abc_strat=False, abc_content=False, iterations=1,
     teacher_weight=5.0, beta1=0.9, beta2=0.999, tips_ratio=0.6, gen_train_steps=5, gen_sampling_steps=5,
     gen_lr=2e-4, gen_sum_scale=0.01, patch_size=320, batch_size=1, epochs=1, max_steps=-1, max_images=0,
     crop_base=16, backbone_opts=[], cond_target=None, init='source', oracle_pairs=None)
@@ -180,7 +189,8 @@ _ID_METHOD_REFERENCE = {
     'transfer': dict(pixel_weight=1.0, perceptual_weight=0.0, lowpass_weight=0.0, ema_decay=0.999),
 }
 _OURS = ('families', 'bank', 'bank_max', 'bank_patch', 'bank_batch', 'exposure_match', 'dark_rule', 'dark_ratio',
-         'dark_action', 'nss_color', 'abc_k', 'abc_fit_n', 'oracle_pairs')
+         'dark_action', 'nss_color', 'abc_k', 'abc_fit_n', 'abc_fit_passes', 'abc_strat', 'abc_content',
+         'oracle_pairs')
 _DCTTA = ('teacher_weight', 'gen_train_steps', 'gen_sampling_steps', 'gen_lr', 'gen_sum_scale', 'tips_ratio')
 _OPTIM = ('ema_decay', 'iterations', 'pixel_weight', 'perceptual_weight', 'lowpass_weight', 'beta1', 'beta2',
           'patch_size', 'batch_size', 'epochs', 'max_steps')
@@ -194,10 +204,11 @@ def config_suffix(args):
     if args.method == 'transfer':
         if args.dark_rule == 'none':
             skip |= {'dark_ratio', 'dark_action'}
+        abc_opts = {'nss_color', 'abc_fit_n', 'abc_fit_passes', 'abc_strat', 'abc_content'}
         if args.abc_k <= 1:
-            skip |= {'nss_color', 'abc_fit_n'}
+            skip |= abc_opts
         if args.oracle_pairs:   # real pairs: nothing is synthesised
-            skip |= {'families', 'dark_rule', 'dark_ratio', 'dark_action', 'nss_color', 'abc_k', 'abc_fit_n'}
+            skip |= {'families', 'dark_rule', 'dark_ratio', 'dark_action', 'abc_k'} | abc_opts
     ref = {**_ID_REFERENCE, **_ID_METHOD_REFERENCE.get(args.method, {})}
     parts = []
     for k, code in SEMANTIC_ARGS.items():

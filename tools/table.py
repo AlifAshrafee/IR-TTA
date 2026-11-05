@@ -10,7 +10,8 @@ writes into the results folder:
                                                   conditioning (S1), random initialisation (Z500, Z5000, ZG500)
   table_ablation_3task.md, table_ablation_5task.md  PromptIR: ours without each component
   table_oracle.md                                 PromptIR 5-task blur / low-light: ours, right family, real pairs
-  table_cost.md                                   adaptation time, memory and adapted parameters
+  table_cost.md                                   adaptation time, memory and adapted parameters (--count:
+                                                  the run.sh count runs, parameters that receive a gradient)
 Options: --input adds the unprocessed input row, --ssim PSNR/SSIM cells, --std seed std where n > 1.
 """
 import argparse
@@ -158,7 +159,25 @@ def delta_table(idx, rows, setting, cols, seed, bb='promptir'):
     return '\n'.join(lines)
 
 
-def cost_table(summary, tag):
+def updated_counts(runs):
+    """{(backbone, 'dctta' | 'ours'): adapted parameters that received a gradient} from runs.csv (any run that
+    tracked it, e.g. ``run.sh count``). The count is architectural (which modules the forward pass uses), so one
+    short run per backbone gives it; the maximum over runs covers routing-dependent experts (MoCE-IR)."""
+    out = {}
+    for r in runs:
+        v = num(r.get('n_params_updated'))
+        m = {'dctta': 'dctta', 'transfer': 'ours'}.get(r['method'])
+        if v is None or m is None or r['source'] != '5task':
+            continue
+        k = (r.get('backbone') or 'promptir', m)
+        out[k] = max(out.get(k, 0), v)
+    return out
+
+
+def cost_table(summary, tag, counts=None):
+    """Time and memory from the main 5-task runs; adapted parameters = those that receive a gradient
+    (``counts``: ``updated_counts``), blank when no run has tracked it."""
+    counts = counts or {}
     lines = ['| Backbone | Method | Adapt time (s / test set) | Peak memory (GB) | Adapted parameters |',
              '|---|---|---|---|---|']
     for bb, name in NAMES.items():
@@ -168,8 +187,9 @@ def cost_table(summary, tag):
             if not rs:
                 continue
             mean = lambda k: sum(num(r.get(k + '_mean')) or 0 for r in rs) / len(rs)  # noqa: E731
+            n = counts.get((bb, m))
             lines.append(f"| {name} | {label} | {mean('adapt_time_s'):.0f} | {mean('peak_mem_gb'):.1f} | "
-                         f"{mean('n_params_adapted'):,.0f} |")
+                         f"{'' if n is None else f'{n:,.0f}'} |")
     return '\n'.join(lines)
 
 
@@ -189,6 +209,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('root', help='results folder with summary.csv / runs.csv (tools/aggregate.py)')
     p.add_argument('--oracle', default=None, help='results folder of the oracle analysis (run.sh oracle)')
+    p.add_argument('--count', default=None, help='results folder of the parameter-count runs (run.sh count)')
     p.add_argument('--tag', default='F1', help="our runs' --tag")
     p.add_argument('--seed', type=int, default=23, help='seed of the single-seed control / oracle runs')
     p.add_argument('--input', action='store_true')
@@ -215,7 +236,12 @@ def main():
         oidx = runs_index(read_csv(os.path.join(args.oracle, 'runs.csv')), {t for t, _ in ORACLE_ROWS})
         write(args.root, 'table_oracle.md', f"## Oracle analysis, PromptIR 5-task (seed {args.seed}) -- PSNR (dB), "
               f"change vs the pretrained model\n\n" + delta_table(oidx, ORACLE_ROWS, '5task', ORACLE_SETS, args.seed))
-    write(args.root, 'table_cost.md', "## Cost on the 5-task test sets (mean over sets)\n\n" + cost_table(summary, args.tag))
+    counts = updated_counts(runs)
+    if args.count:
+        counts.update(updated_counts(read_csv(os.path.join(args.count, 'runs.csv'))))
+    write(args.root, 'table_cost.md', "## Cost on the 5-task test sets (mean over sets)\n\nAdapted parameters: those "
+          "that receive a gradient (modules outside the forward pass excluded).\n\n"
+          + cost_table(summary, args.tag, counts))
 
 
 if __name__ == '__main__':

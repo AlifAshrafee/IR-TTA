@@ -236,12 +236,30 @@ def draw_chain(families, g):
     return FAMILY_CHAINS[families[int(torch.randint(len(families), (1,), generator=g))]]
 
 
-def degrade_batch(c, families, g, target_mean=None, select=None, k=1, clean_mean=None, dark=False):
+def candidate_chains(families, g, k, stratified=False):
+    """The ``k`` candidate chains for one clean image: ``k`` independent uniform family draws, or (``stratified``)
+    every family ceil(k / |families|) times, so each family is always among the candidates (3 families, k = 8 -> 9
+    candidates; 5 families -> 10). Uniform draws miss a given family with probability (1 - 1/|F|)^k.
+
+    A generator: each uniform family draw happens right before that candidate is degraded, the RNG order of the
+    original loop (runs with ``stratified=False`` are bit-identical to before)."""
+    if not stratified:
+        for _ in range(k):
+            yield draw_chain(families, g)
+        return
+    m = -(-k // len(families))
+    for f in families:
+        for _ in range(m):
+            yield FAMILY_CHAINS[f]
+
+
+def degrade_batch(c, families, g, target_mean=None, select=None, k=1, clean_mean=None, dark=False,
+                  stratified=False):
     """Degrade each image of ``c`` (B,3,H,W) -> (degraded, clean targets, family labels, ABC scores or None).
 
-    ``select`` + ``k`` > 1 (ABC pair selection): draw ``k`` candidate degradations per image and keep the one with
-    the lowest ``select(candidates (k,3,H,W)) -> (k,)`` score, the distance of its NSS features to the target set's
-    Gaussian (``irtta/nss.py``)."""
+    ``select`` + ``k`` > 1 (ABC pair selection): draw ``k`` candidate degradations per image (``candidate_chains``)
+    and keep the one with the lowest ``select(candidates (k,3,H,W), clean image (1,3,H,W)) -> (k,)`` score, the
+    distance of its NSS features to the target set's Gaussian (``irtta/nss.py``)."""
     ys, cs, used, scores = [], [], [], []
     for i in range(c.shape[0]):
         if select is None or k <= 1:
@@ -252,11 +270,10 @@ def degrade_batch(c, families, g, target_mean=None, select=None, k=1, clean_mean
             used.append(chain_label(chain))
             continue
         cand = []
-        for _ in range(k):
-            ch = draw_chain(families, g)
+        for ch in candidate_chains(families, g, k, stratified):
             yk, ck = apply_chain(c[i:i + 1], ch, g, target_mean, clean_mean, dark)
             cand.append((ch, yk, ck))
-        sc = select(torch.cat([t[1] for t in cand], 0))
+        sc = select(torch.cat([t[1] for t in cand], 0), c[i:i + 1])
         j = int(torch.argsort(sc)[0])
         chain, y, ci = cand[j]
         ys.append(y)

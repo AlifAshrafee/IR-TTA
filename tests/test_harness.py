@@ -119,9 +119,22 @@ def test_degradations():
     assert torch.equal(c0, c1), "dark without an anchor: natural exposure"
     g.set_state(st)
     # ABC: with a selector the lowest-scoring candidate is kept
-    y, cc, used, sc = D.degrade_batch(c[:2], D.parse_families('all'), g, tm, select=lambda t: -t.mean(dim=(1, 2, 3)),
-                                      k=6)
+    y, cc, used, sc = D.degrade_batch(c[:2], D.parse_families('all'), g, tm,
+                                      select=lambda t, c0: -t.mean(dim=(1, 2, 3)), k=6)
     assert y.shape == c[:2].shape and len(sc) == 2
+    # stratified candidates: every family ceil(k/|F|) times; uniform draws keep the original RNG order
+    fams = D.parse_families('all')
+    chains = list(D.candidate_chains(fams, g, 8, stratified=True))
+    assert len(chains) == 10 and all(sum(ch is D.FAMILY_CHAINS[f] for ch in chains) == 2 for f in fams)
+    assert len(list(D.candidate_chains(['noise', 'rain', 'haze'], g, 8, stratified=True))) == 9
+    seen = []
+    D.degrade_batch(c[:1], fams, g, tm, select=lambda t, c0: seen.append(t.shape[0]) or torch.zeros(t.shape[0]),
+                    k=8, stratified=True)
+    assert seen == [10]
+    st = g.get_state()
+    ref = [D.draw_chain(fams, g) for _ in range(3)]
+    g.set_state(st)
+    assert list(D.candidate_chains(fams, g, 3)) == ref
 
 
 def test_nss():
@@ -219,6 +232,16 @@ def test_end_to_end():
     # ours with the default (final) configuration; the step budget cycles the 3-image set
     r = _run(['--target', 'Tiny', '--families', 'all', '--max_steps', '5', '--tag', 'F1'])
     assert r['steps'] + r['skipped'] == 5 and 'abc=8' in r['run_id'] and r['psnr'] != r_src['psnr'], r['run_id']
+    # one pass: 2 crops per image (3 images -> 6 < --abc_fit_n 8); PromptIR's unused 1x1 convs get no gradient
+    assert r['abc_fit_crops'] == 6, r['abc_fit_crops']
+    assert 0 < r['n_params_updated'] < r['n_params_adapted'], (r['n_params_updated'], r['n_params_adapted'])
+    # variants: more passes reach --abc_fit_n; stratified candidates; content-corrected distance
+    r_v = _run(['--target', 'Tiny', '--families', 'all', '--max_steps', '3', '--abc_fit_passes', '4', '--abc_strat',
+                '--abc_content', '--tag', 'v'])
+    assert r_v['abc_fit_crops'] == 8 and r_v['steps'] + r_v['skipped'] == 3, r_v['abc_fit_crops']
+    assert 'afp=4_ast=True_acn=True' in r_v['run_id'], r_v['run_id']
+    r_1 = _run(['--target', 'Tiny', '--families', 'all', '--max_steps', '3', '--abc_fit_passes', '4', '--tag', 'v1'])
+    assert r_1['abc_fit_crops'] == 8 and r_1['steps'] + r_1['skipped'] == 3
     # every target patch counted as under-exposed (dark_ratio 0): anchored pairs; skip action abstains
     r_a = _run(['--target', 'Tiny', '--families', 'all', '--max_steps', '2', '--dark_ratio', '0', '--tag', 'a'])
     assert r_a['steps'] == 2
@@ -257,6 +280,7 @@ def test_end_to_end():
     # the DCTTA baseline (PromptIR and another backbone), and our method on another backbone
     r_d = _run(['--method', 'dctta', '--target', 'Tiny', '--perceptual_weight', '0'])
     assert r_d['steps'] == 3 and r_d['n_params_effective'] < r_d['n_params_adapted']
+    assert 0 < r_d['n_params_updated'] <= r_d['n_params_adapted']
     r_dad = _run(['--method', 'dctta', '--backbone', 'adair', '--target', 'Tiny', '--perceptual_weight', '0'],
                  ckpt=t['ckpt_adair'])
     assert r_dad['run_id'].startswith('adair-dctta') and r_dad['steps'] == 3
@@ -270,6 +294,9 @@ def test_end_to_end():
     subprocess.check_call([sys.executable, os.path.join(ROOT, 'tools', 'table.py'), res],
                           stdout=subprocess.DEVNULL)
     assert os.path.exists(os.path.join(res, 'table_main_3task.md'))
+    subprocess.check_call([sys.executable, os.path.join(ROOT, 'tools', 'compare.py'), res, '--tags', 'v', 'v1'],
+                          stdout=subprocess.DEVNULL)
+    assert os.path.exists(os.path.join(res, 'compare_3task.md'))
 
 
 def main():

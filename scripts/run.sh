@@ -17,6 +17,10 @@
 #   ablation  PromptIR, both settings: ours without ABC selection / colour statistics / exposure matching /
 #             the under-exposure rule (5-task)
 #   oracle    results/oracle, PromptIR 5-task blur / low-light: ours, the right family only, real pairs
+#   variants  candidate refinements of the ABC selection, $BBS x $SETTINGS on the test sets (compare with
+#             tools/compare.py): V1fill (Gaussian from 256 crops on small sets), V2strat (every family among the
+#             candidates), V3content (content-corrected distance), V4all (the three together)
+#   count     results/count, 5-task: adapted parameters that receive a gradient, ours and DCTTA (table_cost)
 #   tables    aggregate + paper tables (results/suite/table_*.md)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -145,10 +149,39 @@ stage_oracle() {
   done
 }
 
+# V1fill only changes sets with < 128 images (one pass already gives 256 crops otherwise: bit-identical to F1)
+FILL_SKIP="SOTS_Indoor HIDE"
+stage_variants() {
+  local B S M T
+  for B in $BBS; do for S in $SETTINGS; do
+    M=$(model_args $B $S) || continue
+    for T in ${TESTS[$S]}; do
+      [[ " $FILL_SKIP " == *" $T "* ]] || run $M --target $T --tag V1fill --abc_fit_passes 16
+    done
+    for T in ${TESTS[$S]}; do run $M --target $T --tag V2strat --abc_strat; done
+    for T in ${TESTS[$S]}; do run $M --target $T --tag V3content --abc_content; done
+    for T in ${TESTS[$S]}; do
+      run $M --target $T --tag V4all --abc_fit_passes 16 --abc_strat --abc_content
+    done
+  done; done
+}
+
+# The count is architectural (which modules the forward pass uses), so 50 steps on one small set suffice.
+stage_count() {
+  local EXP=count B M
+  for B in $BBS; do
+    M=$(model_args $B 5task) || continue
+    run $M --target Kodak24_Poisson --max_steps 50 --tag CNT
+    run --method dctta $M --target Kodak24_Poisson --max_steps 50 --tag CNT
+  done
+  python tools/aggregate.py results/count
+}
+
 stage_tables() {
   python tools/aggregate.py results/$EXP
   local o=""
   if [[ -d results/oracle ]]; then python tools/aggregate.py results/oracle; o="--oracle results/oracle"; fi
+  if [[ -f results/count/runs.csv ]]; then o="$o --count results/count"; fi
   python tools/table.py results/$EXP $o > /dev/null
   echo "tables: results/$EXP/table_*.md"
 }
