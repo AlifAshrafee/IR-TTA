@@ -40,9 +40,25 @@ class Method:
         self.last_stats = {}
         self.steps = 0
         self.skipped = 0
+        self._updated = None   # indices into subset.params that received a gradient (track_updates)
 
     def prepare(self, loader=None):
         pass
+
+    def track_updates(self):
+        """Record which adapted tensors receive a gradient during adaptation. A tensor outside the forward pass
+        (e.g. PromptIR's chnl_reduce*, R2R's mem_encoder) never does, so it never moves; ``n_params_updated``
+        counts only the others. Gradient hooks do not change any computation or RNG draw."""
+        self._updated = set()
+        for i, p in enumerate(self.subset.params):
+            p.register_hook(lambda g, i=i: self._updated.add(i))
+
+    @property
+    def n_params_updated(self):
+        """Adapted parameters that received a gradient (None if not tracked)."""
+        if self._updated is None:
+            return None
+        return int(sum(self.subset.params[i].numel() for i in self._updated))
 
     def step(self, x, name=None):
         raise NotImplementedError

@@ -17,6 +17,7 @@
 #   ablation  PromptIR, both settings: ours without ABC selection / colour statistics / exposure matching /
 #             the under-exposure rule (5-task)
 #   oracle    results/oracle, PromptIR 5-task blur / low-light: ours, the right family only, real pairs
+#   count     results/count, 5-task: adapted parameters that receive a gradient, ours and DCTTA (table_cost)
 #   tables    aggregate + paper tables (results/suite/table_*.md)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -145,10 +146,22 @@ stage_oracle() {
   done
 }
 
+# The count is architectural (which modules the forward pass uses), so 50 steps on one small set suffice.
+stage_count() {
+  local EXP=count B M
+  for B in $BBS; do
+    M=$(model_args $B 5task) || continue
+    run $M --target Kodak24_Poisson --max_steps 50 --tag CNT
+    run --method dctta $M --target Kodak24_Poisson --max_steps 50 --tag CNT
+  done
+  python tools/aggregate.py results/count
+}
+
 stage_tables() {
   python tools/aggregate.py results/$EXP
   local o=""
   if [[ -d results/oracle ]]; then python tools/aggregate.py results/oracle; o="--oracle results/oracle"; fi
+  if [[ -f results/count/runs.csv ]]; then o="$o --count results/count"; fi
   python tools/table.py results/$EXP $o > /dev/null
   echo "tables: results/$EXP/table_*.md"
 }
