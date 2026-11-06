@@ -175,10 +175,11 @@ def updated_counts(runs):
 
 
 def cost_table(summary, tag, counts=None):
-    """Time and memory from the main 5-task runs; adapted parameters = those that receive a gradient
-    (``counts``: ``updated_counts``), blank when no run has tracked it."""
+    """Time and memory of adaptation from the main 5-task runs (peak memory up to the end of adaptation: the
+    whole-run peak also holds full-resolution inference, the backbone's own cost); adapted parameters = those that
+    receive a gradient (``counts``: ``updated_counts``), blank when no run has tracked it."""
     counts = counts or {}
-    lines = ['| Backbone | Method | Adapt time (s / test set) | Peak memory (GB) | Adapted parameters |',
+    lines = ['| Backbone | Method | Adapt time (s / test set) | Peak memory, adaptation (GB) | Adapted parameters |',
              '|---|---|---|---|---|']
     for bb, name in NAMES.items():
         for m, label in (('dctta', 'DCTTA'), ('ours', 'Ours')):
@@ -188,7 +189,7 @@ def cost_table(summary, tag, counts=None):
                 continue
             mean = lambda k: sum(num(r.get(k + '_mean')) or 0 for r in rs) / len(rs)  # noqa: E731
             n = counts.get((bb, m))
-            lines.append(f"| {name} | {label} | {mean('adapt_time_s'):.0f} | {mean('peak_mem_gb'):.1f} | "
+            lines.append(f"| {name} | {label} | {mean('adapt_time_s'):.0f} | {mean('peak_mem_adapt_gb'):.1f} | "
                          f"{'' if n is None else f'{n:,.0f}'} |")
     return '\n'.join(lines)
 
