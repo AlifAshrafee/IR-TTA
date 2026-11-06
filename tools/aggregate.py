@@ -14,7 +14,8 @@ import statistics
 
 GROUP_KEYS = ['method', 'backbone', 'source', 'target', 'subset', 'lr', 'families', 'exposure_match',
               'eval_alpha', 'max_steps', 'max_images', 'cfg', 'tag']
-METRICS = ['psnr', 'psnr_y', 'ssim', 'adapt_time_s', 'predict_time_s', 'peak_mem_gb', 'n_params_adapted', 'steps']
+METRICS = ['psnr', 'psnr_y', 'ssim', 'adapt_time_s', 'predict_time_s', 'peak_mem_gb', 'n_params_adapted',
+           'n_params_updated', 'steps']
 ID_KEYS = ['run_id', 'exp', 'seed', 'n_images', 'git', 'device']
 
 

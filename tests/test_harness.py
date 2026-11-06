@@ -219,6 +219,8 @@ def test_end_to_end():
     # ours with the default (final) configuration; the step budget cycles the 3-image set
     r = _run(['--target', 'Tiny', '--families', 'all', '--max_steps', '5', '--tag', 'F1'])
     assert r['steps'] + r['skipped'] == 5 and 'abc=8' in r['run_id'] and r['psnr'] != r_src['psnr'], r['run_id']
+    # PromptIR's unused 1x1 convs (chnl_reduce*, reduce_noise_channel_*) get no gradient
+    assert 0 < r['n_params_updated'] < r['n_params_adapted'], (r['n_params_updated'], r['n_params_adapted'])
     # every target patch counted as under-exposed (dark_ratio 0): anchored pairs; skip action abstains
     r_a = _run(['--target', 'Tiny', '--families', 'all', '--max_steps', '2', '--dark_ratio', '0', '--tag', 'a'])
     assert r_a['steps'] == 2
@@ -257,6 +259,7 @@ def test_end_to_end():
     # the DCTTA baseline (PromptIR and another backbone), and our method on another backbone
     r_d = _run(['--method', 'dctta', '--target', 'Tiny', '--perceptual_weight', '0'])
     assert r_d['steps'] == 3 and r_d['n_params_effective'] < r_d['n_params_adapted']
+    assert 0 < r_d['n_params_updated'] <= r_d['n_params_adapted']
     r_dad = _run(['--method', 'dctta', '--backbone', 'adair', '--target', 'Tiny', '--perceptual_weight', '0'],
                  ckpt=t['ckpt_adair'])
     assert r_dad['run_id'].startswith('adair-dctta') and r_dad['steps'] == 3
