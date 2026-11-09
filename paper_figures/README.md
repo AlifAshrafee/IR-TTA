@@ -3,24 +3,25 @@
 Run everything from the repository root, after `bash scripts/run.sh tables` (the scripts read the paper tables and
 the per-image results of the tables' runs). Everything is written to `results/figures/`.
 
-| Figure | Command | GPU | Output |
+| Script | Command | GPU | Output |
 |---|---|---|---|
-| Fig. 2 (right), option A: summary bars | `python paper_figures/summary_bars.py` | no | `summary_bars.pdf`, `figure_stats.md` |
-| Fig. 2 (right), option B: NSS map | `python paper_figures/nss_map.py --source_set SOTS_Outdoor --target OHAZY` | optional | `nss_map/SOTS_Outdoor_to_OHAZY.{pdf,md}`, `nss_map/examples/` |
-| Fig. 1 (left): images of one test case | `GPU=0 bash scripts/run.sh figures` | yes | `qualitative/<set>/<image>/*.png`, `qualitative/contact_<set>.png` |
+| Fig. 1 (a): example images of each degradation shift | `python paper_figures/shift_crops.py` | no | `shift/<source>_to_<target>/*.png`, `shift/contact_*.png` |
+| Fig. 1 (b): images of one test case | `GPU=0 bash scripts/run.sh figures` | yes | `qualitative/<set>/<image>/*.png`, `qualitative/contact_<set>.png` |
+| Experiments: mean PSNR per backbone, pretrained -> ours | `python paper_figures/gain_per_backbone.py` | no | `gain_per_backbone.{pdf,png}` |
+| Analysis: NSS space of source / target / simulated crops | `python paper_figures/nss_map.py --source_set SOTS_Outdoor --target OHAZY` | optional | `nss_map/*.{pdf,md}` |
 
-## summary_bars.py
+## shift_crops.py
 
-One group per degradation family; the zero line is the pretrained model, bars are the mean PSNR change of existing
-AiO TTA and of ours over the six backbones and both settings, dots are single backbone x setting results.
-`figure_stats.md` holds the numbers for the abstract and intro (cells harmed, average gains per backbone).
+Exports evenly spaced degraded images of a source (training) test set and of its shifted test set, downsized to
+`--max_side` px, plus a contact sheet per pair (source row above target row) to pick from. Default pairs: Rain100L ->
+Rain100H, SOTS-Outdoor -> O-HAZY / DenseHaze, BSD68 σ25 -> Kodak24-Poisson, GoPro -> HIDE / DPDD, LOL -> LOLv2-S.
+`--pairs A:B C:D` chooses pairs, `--n` images per set, `--crop S` exports random S x S crops instead of whole
+images, `--gt` also saves the clean references.
 
-| Option | Meaning | Default |
-|---|---|---|
-| `--by family` / `--by set` | one group per family or per test set | family |
-| `--setting both` / `3task` / `5task` | which pretrained models to include | both |
-| `--ylim -4 6` | y-range (dB); lower values are marked at the bottom edge | -4 6 |
-| `--tta_label "..."` | legend name of the existing method | Existing AiO TTA |
+## gain_per_backbone.py
+
+One dumbbell per backbone and setting: mean PSNR over all test sets of the pretrained model (grey) and after ours
+(blue). `--with_tta` adds existing TTA as a hollow orange marker. Reads the paper tables.
 
 ## nss_map.py
 
