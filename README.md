@@ -44,7 +44,7 @@ GPU=1 bash scripts/run.sh dctta             # the DCTTA baseline
 GPU=0 SEED=24 BBS="promptir r2r" bash scripts/run.sh ours   # extra seeds
 GPU=0 bash scripts/run.sh noshift controls ablation oracle
 bash scripts/run.sh tables                  # -> results/suite/table_*.md
-GPU=0 bash scripts/run.sh figures           # paper figures -> results/figures (after the tables)
+GPU=0 bash scripts/run.sh figures           # Fig. 1 images (paper_figures/README.md)
 ```
 
 | stage | what |
@@ -86,7 +86,7 @@ scripts/run.sh              all experiments
 tools/aggregate.py          result.json files -> runs.csv / summary.csv
 tools/table.py              summary.csv -> paper tables
 tools/prepare_dpdd.py       DPDD file-name pairing
-paper_figures/              teaser (reliability scatter / matrix) and qualitative tiles (select, compose)
+paper_figures/              intro figures: summary bars, NSS map, qualitative images (paper_figures/README.md)
 tests/test_harness.py       CPU self-tests
 ```
 

@@ -19,9 +19,9 @@
 #   oracle    results/oracle, PromptIR 5-task blur / low-light: ours, the right family only, real pairs
 #   count     results/count, 5-task: adapted parameters that receive a gradient, ours and DCTTA (table_cost)
 #   tables    aggregate + paper tables (results/suite/table_*.md)
-#   figures   paper figures: chooses images from the suite's per-image PSNRs (paper_figures/qualitative.py select),
-#             re-runs pretrained / DCTTA / ours on $FIG_BB $FIG_S x $FIG_SETS into results/figure_runs saving only
-#             those images, then exports tiles + preview strip and the teaser (results/figures). Needs the suite runs.
+#   figures   Fig. 1 images of one test case: FIG_BB FIG_S FIG_SET (default adair 5task SOTS_Indoor). Picks
+#             candidate images from the tables' per-image PSNRs, re-runs pretrained / DCTTA / ours on that set saving
+#             only those images (results/figure_runs), exports them (results/figures/qualitative)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -162,19 +162,16 @@ stage_count() {
 
 FIG_BB=${FIG_BB:-adair}
 FIG_S=${FIG_S:-5task}
-FIG_SETS=${FIG_SETS:-"Rain100H SOTS_Indoor OHAZY DPDD HIDE"}
+FIG_SET=${FIG_SET:-SOTS_Indoor}
 stage_figures() {
-  local EXP=figure_runs M T N
+  local EXP=figure_runs M Q="--backbone $FIG_BB --setting $FIG_S --target $FIG_SET"
   M=$(model_args $FIG_BB $FIG_S) || return 0
-  for T in $FIG_SETS; do
-    python paper_figures/qualitative.py select --backbone $FIG_BB --setting $FIG_S --target $T --seed $SEED || continue
-    N=results/figures/select/${FIG_BB}_${FIG_S}_${T}.txt
-    run --method source $M --target $T --save_images --save_names $N
-    ours $M --target $T --save_images --save_names $N
-    run --method dctta $M --target $T --save_images --save_names $N
-  done
-  python paper_figures/qualitative.py compose --backbone $FIG_BB --setting $FIG_S --seed $SEED --targets $FIG_SETS
-  python paper_figures/teaser_reliability.py --png
+  python paper_figures/qualitative.py select $Q
+  local N=results/figures/qualitative/${FIG_BB}_${FIG_S}_${FIG_SET}.txt
+  run --method source $M --target $FIG_SET --save_images --save_names $N
+  ours $M --target $FIG_SET --save_images --save_names $N
+  run --method dctta $M --target $FIG_SET --save_images --save_names $N
+  python paper_figures/qualitative.py export $Q
 }
 
 stage_tables() {

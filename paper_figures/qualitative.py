@@ -1,29 +1,30 @@
-"""Qualitative strip (Fig. 2) and the collapse thumbnails of the teaser: choose images from the finished runs, then
-export tiles you can lay out yourself (Lucidchart / Inkscape) plus a matplotlib preview.
+"""Fig. 1 (left): image outputs of ONE test case for the problem-vs-remedy illustration (laid out in Lucidchart).
 
-    # 1. choose candidates from the suite's per-image PSNRs (no GPU, no re-run)
-    python paper_figures/qualitative.py select --backbone adair --setting 5task --target Rain100H
-    # 2. re-run those cases saving only the chosen images (scripts/run.sh figures does 1 + 2 for a list of sets)
-    # 3. tiles + contact sheets + a preview strip
-    python paper_figures/qualitative.py compose --backbone adair --setting 5task \\
-        --targets Rain100H SOTS_Indoor OHAZY DPDD HIDE [--pick Rain100H=<stem> ...] [--box Rain100H=<stem>:x,y,size]
+Three steps; `GPU=0 bash scripts/run.sh figures` runs all three for FIG_BB / FIG_S / FIG_SET (default: AdaIR,
+5-task, SOTS-Indoor).
 
-select   reads ``results/suite/<run>/per_image.csv`` of the pretrained model, + DCTTA and + ours (tag F1) for one
-         backbone / setting / test set and ranks images by how clearly ours beats BOTH baselines,
-         min(ours - pretrained, ours - DCTTA) (rain sets in Y-PSNR, as in the tables). Writes
-         ``results/figures/select/<bb>_<setting>_<target>.{txt,csv}``: the top ``--k`` images, the image at the
-         median gain of the set (an honest "typical" example for the caption) and the ``--k_collapse`` images where
-         DCTTA falls furthest below the pretrained model.
-compose  reads the re-run outputs (``results/figure_runs``) and, per selected image, writes into
-         ``results/figures/tiles/<target>/<stem>/``:
-           <col>.png            full image (optionally cropped to ``--aspect``), col in input/pretrained/dctta/ours/gt
-           <col>_zoom.png       the zoom region, upsampled to ``--zoom_px`` (Lanczos)
-           <col>_tile.png       full image + box + zoom inset in the bottom-right corner (ready to place)
-           psnr.json            the PSNR of every column (per_image.csv of the re-run; Y-PSNR on rain sets)
-         plus ``results/figures/contact_<bb>_<setting>_<target>.png`` (every candidate, one row each: pick from it)
-         and ``results/figures/strip_preview.pdf`` (one row per target: the ``--pick`` image, or the top candidate).
-         The zoom box (unless ``--box``) is the ``--zoom_frac`` square where ours removes the most error relative
-         to the pretrained model (largest mean of |pretrained - GT| - |ours - GT|).
+  1. select   rank the images of one test set by how clearly ours beats both the pretrained model and existing
+              TTA, from the per-image PSNRs the tables' runs already saved (no GPU, nothing re-run):
+                python paper_figures/qualitative.py select --backbone adair --setting 5task --target SOTS_Indoor
+              -> prints the candidates; writes their names to results/figures/qualitative/<bb>_<setting>_<target>.txt
+  2. re-run   pretrained, existing TTA and ours on that test set, saving only those images (run.sh figures does
+              this; the numbers are the same runs as in the tables, written to results/figure_runs)
+  3. export   one folder of PNGs per candidate image, plus a contact sheet to choose from:
+                python paper_figures/qualitative.py export --backbone adair --setting 5task --target SOTS_Indoor
+              -> results/figures/qualitative/<target>/<image>/
+                   input.png  pretrained.png  existing_tta.png  ours.png  gt.png        full images
+                   *_box.png                                                       the same with the zoom box
+                   *_zoom.png                                                      the zoom region, 512 px
+                   psnr.json                                                       PSNR of every image
+                 results/figures/qualitative/contact_<target>.png                  all candidates, one row each
+
+Arguments:
+  --backbone   promptir | adair | bioir | moceir | mirage | r2r
+  --setting    3task | 5task                (which pretrained model)
+  --target     the test set, e.g. SOTS_Indoor, OHAZY, DenseHaze, DPDD, Kodak24_Poisson, LOLv2_Syn, HIDE
+  --image      (export only) export just this image (its file name, with or without extension)
+  --box X,Y,SIZE  (export only, with --image) set the zoom square by hand, in pixels; default: the square where
+               ours removes the most error relative to the pretrained model
 """
 import argparse
 import csv
@@ -43,93 +44,74 @@ sys.path.insert(0, S.REPO)
 sys.path.insert(0, os.path.join(S.REPO, 'tools'))
 from table import Y_TARGETS, num, row_key  # noqa: E402
 
-COLS = ['input', 'pretrained', 'dctta', 'ours', 'gt']
-HEAD = {'input': 'Input', 'pretrained': 'Pretrained', 'dctta': '+ DCTTA', 'ours': '+ Ours', 'gt': 'Ground truth'}
-ROWKEY = {'source': 'pretrained', 'dctta': 'dctta', 'ours': 'ours'}
+RUNS = os.path.join(S.REPO, 'results', 'suite')           # the tables' runs (per-image PSNRs)
+FIG_RUNS = os.path.join(S.REPO, 'results', 'figure_runs')  # the same runs, re-run with --save_images
+OUT = os.path.join(S.REPO, 'results', 'figures', 'qualitative')
+COLS = ['input', 'pretrained', 'existing_tta', 'ours', 'gt']
+ROWKEY = {'source': 'pretrained', 'dctta': 'existing_tta', 'ours': 'ours'}
 BOX_COLOR = (255, 204, 0)
-SHIFT = {'Rain100H': 'rain: light → heavy', 'SOTS_Indoor': 'haze: outdoor → indoor', 'DenseHaze': 'haze: synthetic → real',
-         'OHAZY': 'haze: synthetic → real', 'Kodak24_Poisson': 'noise: Gaussian → Poisson', 'HIDE': 'blur: GoPro → HIDE',
-         'LOLv2_Syn': 'low light: LOL → LOLv2-S', 'DPDD': 'blur: motion → defocus'}
 
 
-# ---------------------------------------------------------------------------- #
-# runs
-# ---------------------------------------------------------------------------- #
-def find_runs(root, backbone, setting, target, seed=23, tag='F1'):
-    """{'pretrained' | 'dctta' | 'ours': run folder} of one cell, the row rules of tools/table.py."""
+def find_runs(root, backbone, setting, target, seed=23):
+    """{'pretrained' | 'existing_tta' | 'ours': run folder} of one table cell (tools/table.py's row rules)."""
     out = {}
-    if not os.path.isdir(root):
-        return out
-    for d in sorted(os.listdir(root)):
+    for d in sorted(os.listdir(root)) if os.path.isdir(root) else []:
         rp = os.path.join(root, d, 'result.json')
         if not os.path.exists(rp):
             continue
         with open(rp) as f:
-            r = json.load(f)
-        r = {k: ('' if v is None else v) for k, v in r.items()}
-        if (r.get('backbone') or 'promptir') != backbone or r.get('source') != setting or r.get('target') != target:
+            r = {k: ('' if v is None else v) for k, v in json.load(f).items()}
+        if ((r.get('backbone') or 'promptir'), r.get('source'), r.get('target')) != (backbone, setting, target):
             continue
         if int(r.get('seed') or 0) != seed:
             continue
-        k = row_key(r, tag)
+        k = row_key(r, 'F1')
         if k in ROWKEY:
             out[ROWKEY[k]] = os.path.join(root, d)
     return out
 
 
 def per_image(run_dir, target):
-    """{stem: psnr} (Y-PSNR on rain sets, as in the tables)."""
+    """{image stem: PSNR} (Y-PSNR on rain sets, as in the tables)."""
     key = 'psnr_y' if target in Y_TARGETS else 'psnr'
     with open(os.path.join(run_dir, 'per_image.csv')) as f:
         return {os.path.splitext(r['name'])[0]: num(r[key]) for r in csv.DictReader(f)}
 
 
-# ---------------------------------------------------------------------------- #
-# select
+def names_file(a):
+    return os.path.join(OUT, f"{a.backbone}_{a.setting}_{a.target}.txt")
+
+
 # ---------------------------------------------------------------------------- #
 def cmd_select(a):
-    runs = find_runs(a.runs, a.backbone, a.setting, a.target, a.seed)
-    miss = [c for c in ('pretrained', 'dctta', 'ours') if c not in runs]
+    runs = find_runs(RUNS, a.backbone, a.setting, a.target)
+    miss = [c for c in ROWKEY.values() if c not in runs]
     if miss:
-        raise SystemExit(f"[select] {a.backbone} {a.setting} {a.target}: no finished {miss} run under {a.runs}")
+        raise SystemExit(f"[select] {a.backbone} {a.setting} {a.target}: no finished {miss} run in {RUNS}")
     p = {c: per_image(d, a.target) for c, d in runs.items()}
-    stems = [s for s in p['ours'] if all(s in p[c] and p[c][s] is not None for c in p)]
     rows = []
-    for s in stems:
-        g_src, g_dc = p['ours'][s] - p['pretrained'][s], p['ours'][s] - p['dctta'][s]
-        rows.append(dict(stem=s, pretrained=p['pretrained'][s], dctta=p['dctta'][s], ours=p['ours'][s],
-                         ours_minus_pretrained=g_src, ours_minus_dctta=g_dc, score=min(g_src, g_dc),
-                         dctta_minus_pretrained=p['dctta'][s] - p['pretrained'][s]))
-    rows.sort(key=lambda r: -r['score'])
-    med = statistics.median(r['ours_minus_pretrained'] for r in rows)
-    typical = min(rows, key=lambda r: abs(r['ours_minus_pretrained'] - med))
-    collapse = sorted(rows, key=lambda r: r['dctta_minus_pretrained'])[:a.k_collapse]
-    chosen, why = [], {}
-    for r, w in [(r, 'top') for r in rows[:a.k]] + [(typical, 'median')] + [(r, 'dctta_collapse') for r in collapse]:
-        if r['stem'] not in why:
-            chosen.append(r)
-        why[r['stem']] = '+'.join(filter(None, [why.get(r['stem']), w]))
-    os.makedirs(a.sel_dir, exist_ok=True)
-    base = os.path.join(a.sel_dir, f"{a.backbone}_{a.setting}_{a.target}")
-    with open(base + '.txt', 'w') as f:
-        f.write('\n'.join(r['stem'] for r in chosen) + '\n')
-    with open(base + '.csv', 'w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=['stem', 'why'] + [k for k in rows[0] if k != 'stem'])
-        w.writeheader()
-        for r in chosen:
-            w.writerow({'why': why[r['stem']], **{k: (f"{v:.2f}" if isinstance(v, float) else v) for k, v in r.items()}})
-    print(f"[select] {a.backbone} {a.setting} {a.target}: {len(rows)} images, median ours - pretrained {med:+.2f} dB;"
-          f" {len(chosen)} chosen -> {base}.txt")
-    for r in chosen:
-        print(f"  {r['stem']:<28} {why[r['stem']]:<20} pre {r['pretrained']:6.2f}  dctta {r['dctta']:6.2f}  "
-              f"ours {r['ours']:6.2f}")
+    for s in p['ours']:
+        v = {c: p[c].get(s) for c in p}
+        if None not in v.values():
+            rows.append((min(v['ours'] - v['pretrained'], v['ours'] - v['existing_tta']), s, v))
+    rows.sort(key=lambda r: -r[0])
+    med = statistics.median(v['ours'] - v['pretrained'] for _, _, v in rows)
+    typical = min(rows, key=lambda r: abs(r[2]['ours'] - r[2]['pretrained'] - med))
+    chosen = rows[:a.k] + ([typical] if typical not in rows[:a.k] else [])
+    os.makedirs(OUT, exist_ok=True)
+    with open(names_file(a), 'w') as f:
+        f.write('\n'.join(s for _, s, _ in chosen) + '\n')
+    print(f"[select] {a.target}: {len(rows)} images; median gain of ours over pretrained {med:+.2f} dB. "
+          f"Candidates (largest margin over both first; last = the median-gain image):")
+    print(f"  {'image':<26} {'pretrained':>10} {'existing':>9} {'ours':>7}")
+    for _, s, v in chosen:
+        print(f"  {s:<26} {v['pretrained']:10.2f} {v['existing_tta']:9.2f} {v['ours']:7.2f}")
+    print(f"-> {names_file(a)}")
 
 
-# ---------------------------------------------------------------------------- #
-# compose
 # ---------------------------------------------------------------------------- #
 def load_pair(target, stem):
-    """(LQ, GT) uint8 HxWx3 exactly as evaluated (centre crop to a multiple of 16, O-HAZY's max_side)."""
+    """(input, GT) as uint8 HxWx3, exactly as evaluated (centre crop to x16, the set's max_side)."""
     from irtta.data import available_names, load_registry, make_eval_dataset, resolve_spec
     spec = resolve_spec(target, load_registry())
     name = next(n for n in available_names(spec) if os.path.splitext(n)[0] == stem)
@@ -138,241 +120,111 @@ def load_pair(target, stem):
     return to8(lq), to8(gt)
 
 
-def auto_box(pre, ours, gt, frac):
-    """Top-left (x, y) and side of the square where ours removes the most error vs the pretrained model."""
+def psnr_u8(x, y, luma=False):
+    x, y = x.astype(np.float64), y.astype(np.float64)
+    if luma:   # BT.601 Y, as irtta/evaluation.py
+        w = np.array([65.481, 128.553, 24.966]) / 255.
+        x, y = 16 + x @ w, 16 + y @ w
+    return 10 * np.log10(255. ** 2 / max(float(((x - y) ** 2).mean()), 1e-12))
+
+
+def auto_box(pre, ours, gt, frac=0.2):
+    """(x, y, size): the square where ours removes the most error relative to the pretrained model."""
     e = (np.abs(pre.astype(np.float32) - gt) - np.abs(ours.astype(np.float32) - gt)).mean(2)
     H, W = e.shape
     s = max(16, int(round(min(H, W) * frac)))
     ii = np.pad(e.cumsum(0).cumsum(1), ((1, 0), (1, 0)))
     tot = ii[s:, s:] - ii[:-s, s:] - ii[s:, :-s] + ii[:-s, :-s]
-    m = max(2, s // 8)   # keep the box off the border
-    tot[:m, :], tot[-m:, :], tot[:, :m], tot[:, -m:] = -np.inf, -np.inf, -np.inf, -np.inf
+    m = max(2, s // 8)
+    tot[:m], tot[-m:], tot[:, :m], tot[:, -m:] = -np.inf, -np.inf, -np.inf, -np.inf
     y, x = np.unravel_index(np.argmax(tot), tot.shape)
     return int(x), int(y), s
 
 
-def aspect_crop(img_shape, box, aspect):
-    """Crop window (x0, y0, w, h) of the given aspect (w / h) that keeps the zoom box inside, else the full image."""
-    H, W = img_shape[:2]
-    if not aspect:
-        return 0, 0, W, H
-    if W / H > aspect:
-        w, h = int(round(H * aspect)), H
-    else:
-        w, h = W, int(round(W / aspect))
-    bx, by, bs = box
-    x0 = int(np.clip(bx + bs / 2 - w / 2, 0, W - w))
-    y0 = int(np.clip(by + bs / 2 - h / 2, 0, H - h))
-    return x0, y0, w, h
-
-
-def make_tiles(imgs, box, crop, zoom_px, inset_frac, line):
-    """{col: (full, zoom, tile)} PIL images."""
-    x0, y0, w, h = crop
-    bx, by, bs = box
-    out = {}
-    for c, a in imgs.items():
-        full = Image.fromarray(a[y0:y0 + h, x0:x0 + w])
-        zoom = Image.fromarray(a[by:by + bs, bx:bx + bs]).resize((zoom_px, zoom_px), Image.LANCZOS)
-        tile = full.copy()
-        d = ImageDraw.Draw(tile)
-        lw = max(line, int(round(w / 250)))
-        d.rectangle([bx - x0, by - y0, bx - x0 + bs - 1, by - y0 + bs - 1], outline=BOX_COLOR, width=lw)
-        iw = int(round(w * inset_frac))
-        inset = zoom.resize((iw, iw), Image.LANCZOS)
-        # inset in the corner farthest from the box, so it never hides the region it magnifies
-        cx, cy = bx - x0 + bs / 2, by - y0 + bs / 2
-        px = lw if cx > w / 2 else w - iw - lw
-        py = lw if cy > h / 2 else h - iw - lw
-        d.rectangle([px - lw, py - lw, px + iw + lw - 1, py + iw + lw - 1], fill=BOX_COLOR)
-        tile.paste(inset, (px, py))
-        out[c] = (full, zoom, tile)
-    return out
-
-
-def load_case(a, target, stem, runs, box=None):
-    lq, gt = load_pair(target, stem)
+def export_one(a, runs, stem, box=None):
+    lq, gt = load_pair(a.target, stem)
     imgs = {'input': lq, 'gt': gt}
-    for c in ('pretrained', 'dctta', 'ours'):
+    for c in ('pretrained', 'existing_tta', 'ours'):
         p = os.path.join(runs[c], 'images', stem + '.png')
         if not os.path.exists(p):
+            print(f"[export] {stem}: {c} image not saved by the re-run (run.sh figures); skipped")
             return None
         imgs[c] = np.asarray(Image.open(p).convert('RGB'))
-        if imgs[c].shape != gt.shape:
-            raise SystemExit(f"{p}: shape {imgs[c].shape} != GT {gt.shape}")
-    box = box or auto_box(imgs['pretrained'], imgs['ours'], gt, a.zoom_frac)
-    psnr = {c: per_image(runs[c], target).get(stem) for c in ('pretrained', 'dctta', 'ours')}
-    psnr['input'] = psnr_u8(lq, gt, target in Y_TARGETS)
-    return imgs, box, psnr
+    bx, by, bs = box or auto_box(imgs['pretrained'], imgs['ours'], gt)
+    od = os.path.join(OUT, a.target, stem)
+    os.makedirs(od, exist_ok=True)
+    psnr = {c: per_image(runs[c], a.target).get(stem) for c in ('pretrained', 'existing_tta', 'ours')}
+    psnr['input'] = psnr_u8(lq, gt, a.target in Y_TARGETS)
+    lw = max(2, int(round(gt.shape[1] / 250)))
+    boxed = {}
+    for c in COLS:
+        im = Image.fromarray(imgs[c])
+        im.save(os.path.join(od, f'{c}.png'))
+        b = im.copy()
+        ImageDraw.Draw(b).rectangle([bx, by, bx + bs - 1, by + bs - 1], outline=BOX_COLOR, width=lw)
+        b.save(os.path.join(od, f'{c}_box.png'))
+        im.crop((bx, by, bx + bs, by + bs)).resize((512, 512), Image.LANCZOS).save(os.path.join(od, f'{c}_zoom.png'))
+        boxed[c] = b
+    with open(os.path.join(od, 'psnr.json'), 'w') as f:
+        json.dump({'metric': 'Y-PSNR' if a.target in Y_TARGETS else 'RGB PSNR', 'box_x_y_size': [bx, by, bs],
+                   **{c: round(v, 2) for c, v in psnr.items() if v is not None}}, f, indent=1)
+    return boxed, psnr
 
 
-def psnr_u8(a, b, y=False):
-    """PSNR of two uint8 images, RGB or BT.601 Y (irtta/evaluation.py conventions)."""
-    a, b = a.astype(np.float64), b.astype(np.float64)
-    if y:
-        w = np.array([65.481, 128.553, 24.966]) / 255.
-        a, b = 16 + a @ w, 16 + b @ w
-    mse = max(float(((a - b) ** 2).mean()), 1e-12)
-    return 10 * np.log10(255. ** 2 / mse)
-
-
-def preview(rows, path, title_shift=True):
-    """rows: [(target, stem, tiles, psnr)] -> one PDF, rows = targets, columns = COLS."""
-    import matplotlib.pyplot as plt
-    S.setup(7)
-    aspects = [t['gt'][2].size[0] / t['gt'][2].size[1] for _, _, t, _ in rows]
-    W = S.TEXT_W
-    cw = W / len(COLS)
-    fig_h = sum(cw / ar for ar in aspects) + 0.18 * len(rows) + 0.15
-    fig, axes = plt.subplots(len(rows), len(COLS), figsize=(W, fig_h), squeeze=False,
-                             gridspec_kw=dict(wspace=0.02, hspace=0.16, height_ratios=[1 / ar for ar in aspects]))
-    for i, (t, stem, tiles, psnr) in enumerate(rows):
-        for j, c in enumerate(COLS):
-            ax = axes[i, j]
-            ax.imshow(tiles[c][2])
-            ax.set_xticks([])
-            ax.set_yticks([])
-            for sp in ax.spines.values():
-                sp.set_visible(False)
-            if i == 0:
-                ax.set_title(HEAD[c], fontsize=7.5, pad=2,
-                             color=S.C_OURS if c == 'ours' else S.C_DCTTA if c == 'dctta' else S.INK)
-            if c in psnr and psnr[c] is not None:
-                ax.set_xlabel(f"{psnr[c]:.2f} dB", fontsize=6.8, labelpad=1.5,
-                              color=S.C_OURS if c == 'ours' else S.INK)
-            if j == 0:
-                ax.set_ylabel(f"{S.SHORT.get(t, t)}\n{SHIFT.get(t, '')}" if title_shift else S.SHORT.get(t, t),
-                              fontsize=6.5, labelpad=2)
-    fig.savefig(path)
-    fig.savefig(os.path.splitext(path)[0] + '.png', dpi=220)
-    plt.close(fig)
-
-
-def contact_sheet(cases, path, h=150):
-    """Every candidate of one target: a row of the five tiles (scaled to height h) with the PSNRs written under."""
-    rows = []
-    for stem, tiles, psnr in cases:
-        ims = [tiles[c][2] for c in COLS]
-        ims = [im.resize((int(im.size[0] * h / im.size[1]), h), Image.LANCZOS) for im in ims]
-        wsum = sum(im.size[0] for im in ims) + 4 * len(ims)
-        row = Image.new('RGB', (wsum, h + 18), 'white')
-        x = 0
-        d = ImageDraw.Draw(row)
+def cmd_export(a):
+    runs = find_runs(FIG_RUNS, a.backbone, a.setting, a.target)
+    miss = [c for c in ROWKEY.values() if c not in runs]
+    if miss:
+        raise SystemExit(f"[export] no {miss} re-run with saved images in {FIG_RUNS}: run `bash scripts/run.sh figures`")
+    if a.image:
+        stems = [os.path.splitext(a.image)[0]]
+    else:
+        with open(names_file(a)) as f:
+            stems = [s.strip() for s in f if s.strip()]
+    box = tuple(int(v) for v in a.box.split(',')) if a.box else None
+    sheet_rows = []
+    for stem in stems:
+        r = export_one(a, runs, stem, box)
+        if r is None:
+            continue
+        boxed, psnr = r
+        h = 160
+        ims = [boxed[c].resize((int(boxed[c].size[0] * h / boxed[c].size[1]), h), Image.LANCZOS) for c in COLS]
+        row = Image.new('RGB', (sum(i.size[0] + 4 for i in ims), h + 16), 'white')
+        d, x = ImageDraw.Draw(row), 0
         for c, im in zip(COLS, ims):
             row.paste(im, (x, 0))
-            lab = f"{c} {psnr[c]:.2f}" if psnr.get(c) is not None else c
-            d.text((x + 2, h + 3), lab if c != 'input' else f"{stem}", fill=(0, 0, 0))
+            d.text((x + 2, h + 2), stem if c == 'gt' else f"{c} {psnr.get(c, 0):.2f}", fill=(0, 0, 0))
             x += im.size[0] + 4
-        rows.append(row)
-    if not rows:
-        return
-    sheet = Image.new('RGB', (max(r.size[0] for r in rows), sum(r.size[1] + 6 for r in rows)), 'white')
-    y = 0
-    for r in rows:
-        sheet.paste(r, (0, y))
-        y += r.size[1] + 6
-    sheet.save(path)
-
-
-def parse_kv(items):
-    out = {}
-    for it in items or []:
-        k, v = it.split('=', 1)
-        out[k] = v
-    return out
-
-
-def cmd_compose(a):
-    picks = parse_kv(a.pick)
-    boxes = {}
-    for k, v in parse_kv(a.box).items():
-        stem, xys = v.split(':')
-        boxes[(k, stem)] = tuple(int(t) for t in xys.split(','))
-    aspect = None
-    if a.aspect:
-        w, h = a.aspect.split(':')
-        aspect = float(w) / float(h)
-    strip = []
-    for t in a.targets:
-        runs = find_runs(a.fig_runs, a.backbone, a.setting, t, a.seed)
-        miss = [c for c in ('pretrained', 'dctta', 'ours') if c not in runs]
-        if miss:
-            print(f"[compose] {t}: no {miss} run with saved images under {a.fig_runs} (run.sh figures); skipped")
-            continue
-        sel = os.path.join(a.sel_dir, f"{a.backbone}_{a.setting}_{t}.txt")
-        stems = [picks[t]] if t in picks and a.only_picks else [s.strip() for s in open(sel) if s.strip()]
-        if t in picks and picks[t] not in stems:
-            stems.insert(0, picks[t])
-        suite = find_runs(a.runs, a.backbone, a.setting, t, a.seed)
-        cases = []
-        for stem in stems:
-            case = load_case(a, t, stem, runs, boxes.get((t, stem)))
-            if case is None:
-                print(f"[compose] {t}/{stem}: image not saved by the re-run; skipped")
-                continue
-            imgs, box, psnr = case
-            for c in ('pretrained', 'dctta', 'ours'):   # the re-run must reproduce the tables' run
-                if c in suite and psnr[c] is not None:
-                    ref = per_image(suite[c], t).get(stem)
-                    if ref is not None and abs(ref - psnr[c]) > 0.05:
-                        print(f"  [warn] {t}/{stem} {c}: re-run {psnr[c]:.2f} dB vs suite {ref:.2f} dB")
-            tiles = make_tiles(imgs, box, aspect_crop(imgs['gt'].shape, box, aspect), a.zoom_px, a.inset, a.line)
-            od = os.path.join(a.out, 'tiles', t, stem)
-            os.makedirs(od, exist_ok=True)
-            for c, (full, zoom, tile) in tiles.items():
-                full.save(os.path.join(od, f'{c}.png'))
-                zoom.save(os.path.join(od, f'{c}_zoom.png'))
-                tile.save(os.path.join(od, f'{c}_tile.png'))
-            with open(os.path.join(od, 'psnr.json'), 'w') as f:
-                json.dump({'target': t, 'stem': stem, 'metric': 'psnr_y' if t in Y_TARGETS else 'psnr',
-                           'box_xy_size': box, **psnr}, f, indent=1)
-            cases.append((stem, tiles, psnr))
-        if not cases:
-            continue
-        cs = os.path.join(a.out, f"contact_{a.backbone}_{a.setting}_{t}.png")
-        contact_sheet(cases, cs)
-        print(f"[compose] {t}: {len(cases)} cases -> {a.out}/tiles/{t}/, contact sheet {cs}")
-        stem = picks.get(t, cases[0][0])
-        best = next(c for c in cases if c[0] == stem)
-        strip.append((t, stem, best[1], best[2]))
-    if strip:
-        p = os.path.join(a.out, 'strip_preview.pdf')
-        preview(strip, p)
-        print(f"[compose] preview strip ({', '.join(f'{t}={s}' for t, s, _, _ in strip)}) -> {p}")
-        for t, s, _, _ in strip:
-            print(f"  teaser thumbnail: --thumb dctta:{a.backbone}:{a.setting}:{t}="
-                  f"{os.path.relpath(os.path.join(a.out, 'tiles', t, s, 'dctta.png'), S.REPO)}")
+        sheet_rows.append(row)
+        print(f"[export] {stem}: " + ', '.join(f"{c} {psnr[c]:.2f}" for c in COLS if c in psnr)
+              + f" dB -> {os.path.join(OUT, a.target, stem)}/")
+    if sheet_rows and not a.image:
+        sheet = Image.new('RGB', (max(r.size[0] for r in sheet_rows), sum(r.size[1] + 6 for r in sheet_rows)), 'white')
+        y = 0
+        for r in sheet_rows:
+            sheet.paste(r, (0, y))
+            y += r.size[1] + 6
+        p = os.path.join(OUT, f'contact_{a.target}.png')
+        sheet.save(p)
+        print(f"[export] contact sheet -> {p}")
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest='cmd', required=True)
-    for name in ('select', 'compose'):
+    for name in ('select', 'export'):
         q = sub.add_parser(name)
         q.add_argument('--backbone', default='adair')
         q.add_argument('--setting', default='5task')
-        q.add_argument('--seed', type=int, default=23)
-        q.add_argument('--runs', default=os.path.join(S.REPO, 'results', 'suite'), help='the tables\' runs')
-        q.add_argument('--sel_dir', default=os.path.join(S.REPO, 'results', 'figures', 'select'))
+        q.add_argument('--target', default='SOTS_Indoor')
         if name == 'select':
-            q.add_argument('--target', required=True)
-            q.add_argument('--k', type=int, default=6, help='top images by min(ours - pretrained, ours - DCTTA)')
-            q.add_argument('--k_collapse', type=int, default=2, help='images where DCTTA drops the most')
+            q.add_argument('--k', type=int, default=8, help=argparse.SUPPRESS)
         else:
-            q.add_argument('--targets', nargs='+', default=['Rain100H', 'SOTS_Indoor', 'OHAZY', 'DPDD', 'HIDE'])
-            q.add_argument('--fig_runs', default=os.path.join(S.REPO, 'results', 'figure_runs'),
-                           help='the re-runs with saved images (run.sh figures)')
-            q.add_argument('--out', default=os.path.join(S.REPO, 'results', 'figures'))
-            q.add_argument('--pick', action='append', default=[], help='target=stem: the image of the preview strip')
-            q.add_argument('--only_picks', action='store_true', help='compose only the --pick images')
-            q.add_argument('--box', action='append', default=[], help='target=stem:x,y,size (zoom box, pixels)')
-            q.add_argument('--zoom_frac', type=float, default=0.2, help='zoom box side / short image side')
-            q.add_argument('--zoom_px', type=int, default=512)
-            q.add_argument('--inset', type=float, default=0.38, help='inset width / tile width')
-            q.add_argument('--aspect', default='4:3', help="crop every tile to this aspect (w:h) around the box; '' = off")
-            q.add_argument('--line', type=int, default=2, help='minimum box line width (px)')
+            q.add_argument('--image', default=None)
+            q.add_argument('--box', default=None)
     a = p.parse_args()
-    {'select': cmd_select, 'compose': cmd_compose}[a.cmd](a)
+    {'select': cmd_select, 'export': cmd_export}[a.cmd](a)
 
 
 if __name__ == '__main__':

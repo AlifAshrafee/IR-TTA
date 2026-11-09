@@ -16,9 +16,11 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEXT_W = 6.875
 COL_W = (6.875 - 0.3125) / 2   # 3.28 in
 
-# method identity (validated pair: CVD dE 24.7, normal-vision dE 33.6); ours = blue throughout the paper
+# One colour code for the whole paper (validated pair: CVD dE 24.7, normal-vision dE 33.6):
+#   blue   = ours / inferred from the target           orange = source / pretrained-derived (incl. existing TTA)
 C_OURS = '#2a78d6'
 C_DCTTA = '#eb6834'
+C_TARGET = '#3d3d3a'   # target images (NSS map): dark neutral outline, separated from both hues by lightness
 C_SOURCE = '#7a7a76'
 INK, INK2, GRID = '#1f1f1d', '#5c5c58', '#d9d8d4'
 # diverging (harm <-> gain): red / blue poles, neutral grey midpoint
