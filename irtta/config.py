@@ -107,6 +107,9 @@ def get_parser():
     g.add_argument('--dataset_seed', type=int, default=None,
                    help='global re-seed inside the patch dataset, as the released DCTTA code does (default: --seed)')
     g.add_argument('--save_images', action='store_true')
+    g.add_argument('--save_names', type=str, default=None,
+                   help='with --save_images: a text file of image names (one per line, extension ignored) to save; '
+                        'default: every image. Does not change the run id or any number.')
     g.add_argument('--out_root', type=str, default='results')
     g.add_argument('--exp', type=str, default='suite', help='experiment folder under --out_root')
     g.add_argument('--tag', type=str, default='', help='suffix of the run id; the tables select runs by it')

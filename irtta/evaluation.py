@@ -66,8 +66,9 @@ def image_row(name, restored, clean):
 
 
 @torch.no_grad()
-def evaluate_detailed(model, loader, device, results_dir=None, log=None):
-    """Returns ``(summary, rows)``: set means of psnr / ssim / psnr_y and one row per image."""
+def evaluate_detailed(model, loader, device, results_dir=None, log=None, save_only=None):
+    """Returns ``(summary, rows)``: set means of psnr / ssim / psnr_y and one row per image. With ``results_dir``
+    the restored images are saved there (``save_only``: a set of name stems to save, default all)."""
     was_training = model.training
     model.eval()
     if results_dir is not None:
@@ -83,8 +84,9 @@ def evaluate_detailed(model, loader, device, results_dir=None, log=None):
         rows.append(row)
         if log is not None:
             log.info(f"{names[0]}: PSNR {row['psnr']:.3f} SSIM {row['ssim']:.4f}")
-        if results_dir is not None:
-            save_image_tensor(restored, os.path.join(results_dir, os.path.splitext(names[0])[0] + ".png"))
+        stem = os.path.splitext(names[0])[0]
+        if results_dir is not None and (save_only is None or stem in save_only):
+            save_image_tensor(restored, os.path.join(results_dir, stem + ".png"))
     model.train(was_training)
     return summarize(rows, psnr_m.avg, ssim_m.avg), rows
 

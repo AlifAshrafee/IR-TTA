@@ -196,10 +196,14 @@ def main(argv=None):
 
     ds = make_eval_dataset(spec, base=args.crop_base, max_images=args.max_images or None)
     img_dir = os.path.join(run_dir, 'images') if args.save_images else None
+    save_only = None
+    if img_dir and args.save_names:
+        with open(args.save_names) as f:
+            save_only = {os.path.splitext(ln.strip())[0] for ln in f if ln.strip()}
     _sync()
     t0 = time.time()
     summary, rows = evaluate_detailed(method.eval_model, eval_loader(ds, args.num_workers), device,
-                                      results_dir=img_dir, log=logger)
+                                      results_dir=img_dir, log=logger, save_only=save_only)
     _sync()
     predict_time = time.time() - t0
     write_rows(os.path.join(run_dir, 'per_image.csv'), rows)
