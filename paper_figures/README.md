@@ -67,3 +67,65 @@ Choose the case with `FIG_BB` (backbone), `FIG_S` (3task / 5task) and `FIG_SET` 
 `FIG_BB=adair FIG_S=5task FIG_SET=DPDD GPU=0 bash scripts/run.sh figures`. After choosing an image from the contact
 sheet, re-export it alone, optionally with a hand-set zoom square (x, y, size in pixels):
 `python paper_figures/qualitative.py export --backbone adair --setting 5task --target SOTS_Indoor --image <name> --box 120,80,96`.
+
+# Experiments figures
+
+All of these follow `style.py` (ours blue circles, DCTTA orange triangles, pretrained grey; Times-like serif at
+6.5-8 pt; sized to the column, 3.28 in, or the text width, 6.875 in, so include them without rescaling). Each script
+writes a vector PDF and a PNG preview to `results/figures/`.
+
+| Figure | Where | Command | GPU | Output |
+|---|---|---|---|---|
+| `fig:qualitative` | main, text width, 3.3 in tall | `GPU=0 bash scripts/run.sh qualitative` | yes | `qualitative_grid.pdf` |
+| `fig:controls` | main, one column, 1.55 in tall | `python paper_figures/controls.py` | no | `controls.pdf` |
+| `supp:cost` | supplementary, text width | `python paper_figures/cost.py` | no | `cost.pdf` |
+| `fig:reliability` | supplementary, one column | `python paper_figures/reliability.py` | no | `reliability.pdf` |
+
+`bash scripts/run.sh plots` runs the three table-driven scripts (after `run.sh tables`). Copies built from the Nov 9
+tables are in `paper_figures/pdf/`; re-run `plots` whenever the tables change.
+
+## qualitative_grid.py (via `run.sh qualitative`)
+
+One test case per row: the full input with the zoom region marked, then the zoom of input, pretrained, + DCTTA,
++ ours and ground truth, with the full-image PSNR under each zoom.
+
+```bash
+GPU=0 bash scripts/run.sh qualitative       # the four rows of the paper (12 runs; DCTTA's take the longest)
+```
+
+For every row this (1) picks the five images whose gain over the pretrained model is closest to the median of the
+set (`qualitative.py select --rule median`, from the tables' per-image PSNRs), (2) re-runs pretrained, ours and DCTTA
+saving only those images to `results/figure_runs`, (3) composes the grid from the median-gain image of each row.
+Finished runs are skipped, so the stage can be re-run.
+
+Rows are `backbone:setting:set`, set with `QUAL_ROWS`; the output name with `QUAL_NAME`:
+
+```bash
+# default (main paper)
+QUAL_ROWS="adair:5task:Rain100H moceir:3task:OHAZY bioir:3task:Kodak24_Poisson mirage:5task:DPDD"
+# supplementary: the remaining target sets, including the two where ours does not gain
+QUAL_ROWS="r2r:3task:SOTS_Indoor mirage:3task:DenseHaze promptir:5task:HIDE adair:5task:LOLv2_Syn" \
+  QUAL_NAME=qualitative_supp GPU=0 bash scripts/run.sh qualitative
+```
+
+To change an image or a zoom region without re-running anything, call the composer directly. A row can name one of
+the five saved images and a zoom region `x,y,w` (pixels of the evaluated image; the composer prints the ones it used):
+
+```bash
+python paper_figures/qualitative_grid.py \
+  --rows adair:5task:Rain100H moceir:3task:OHAZY bioir:3task:Kodak24_Poisson mirage:5task:DPDD:<image>:300,180,160
+python paper_figures/qualitative_grid.py --demo     # layout preview with synthetic images, no results needed
+```
+
+If a row was already run by `run.sh figures` (Fig. 1) with other saved names, delete that run's folder in
+`results/figure_runs` first; the composer says which.
+
+## controls.py, cost.py, reliability.py
+
+- `controls.py`: one bar per control (mean change over the pretrained model, PromptIR three-task), grouped by what is
+  adapted, plus the number of target sets each control improves. The 5000-step random initialisation stays in the
+  caption.
+- `cost.py`: three aligned panels (time, adapted parameters, mean change in PSNR), one row per backbone, DCTTA and
+  ours joined by a line, every value printed.
+- `reliability.py`: every backbone, setting and target set of the main tables as one mark, one row per target set.
+  The axis has one visible break so that DCTTA's large losses are shown, not clipped (`--brk` moves it).

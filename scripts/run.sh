@@ -22,6 +22,10 @@
 #   figures   Fig. 1 images of one test case: FIG_BB FIG_S FIG_SET (default adair 5task SOTS_Indoor). Picks
 #             candidate images from the tables' per-image PSNRs, re-runs pretrained / DCTTA / ours on that set saving
 #             only those images (results/figure_runs), exports them (results/figures/qualitative)
+#   qualitative  experiments figure (fig:qualitative): for every row of QUAL_ROWS (backbone:setting:set), picks the
+#             images closest to the set's median gain, re-runs pretrained / DCTTA / ours saving only those images,
+#             then composes results/figures/$QUAL_NAME.pdf (paper_figures/qualitative_grid.py)
+#   plots     the figures drawn from the tables, no GPU: controls, cost, reliability (results/figures/*.pdf)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -172,6 +176,28 @@ stage_figures() {
   ours $M --target $FIG_SET --save_images --save_names $N
   run --method dctta $M --target $FIG_SET --save_images --save_names $N
   python paper_figures/qualitative.py export $Q
+}
+
+QUAL_ROWS=${QUAL_ROWS:-"adair:5task:Rain100H moceir:3task:OHAZY bioir:3task:Kodak24_Poisson mirage:5task:DPDD"}
+QUAL_NAME=${QUAL_NAME:-qualitative_grid}
+stage_qualitative() {
+  local EXP=figure_runs R B S T M N
+  for R in $QUAL_ROWS; do
+    IFS=: read -r B S T _ <<< "$R"
+    M=$(model_args $B $S) || continue
+    python paper_figures/qualitative.py select --rule median --k 5 --backbone $B --setting $S --target $T
+    N=results/figures/qualitative/${B}_${S}_${T}.txt
+    run --method source $M --target $T --save_images --save_names $N
+    ours $M --target $T --save_images --save_names $N
+    run --method dctta $M --target $T --save_images --save_names $N
+  done
+  python paper_figures/qualitative_grid.py --rows $QUAL_ROWS --name $QUAL_NAME
+}
+
+stage_plots() {
+  python paper_figures/controls.py
+  python paper_figures/cost.py
+  python paper_figures/reliability.py
 }
 
 stage_tables() {

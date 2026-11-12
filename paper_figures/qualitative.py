@@ -97,12 +97,16 @@ def cmd_select(a):
     rows.sort(key=lambda r: -r[0])
     med = statistics.median(v['ours'] - v['pretrained'] for _, _, v in rows)
     typical = min(rows, key=lambda r: abs(r[2]['ours'] - r[2]['pretrained'] - med))
-    chosen = rows[:a.k] + ([typical] if typical not in rows[:a.k] else [])
+    if a.rule == 'median':   # experiments figure: the images closest to the set's median gain, the closest first
+        chosen = sorted(rows, key=lambda r: abs(r[2]['ours'] - r[2]['pretrained'] - med))[:a.k]
+    else:
+        chosen = rows[:a.k] + ([typical] if typical not in rows[:a.k] else [])
     os.makedirs(OUT, exist_ok=True)
     with open(names_file(a), 'w') as f:
         f.write('\n'.join(s for _, s, _ in chosen) + '\n')
-    print(f"[select] {a.target}: {len(rows)} images; median gain of ours over pretrained {med:+.2f} dB. "
-          f"Candidates (largest margin over both first; last = the median-gain image):")
+    print(f"[select] {a.target}: {len(rows)} images; median gain of ours over pretrained {med:+.2f} dB. Candidates ("
+          + ("closest to the median gain first):" if a.rule == 'median' else
+             "largest margin over both first; last = the median-gain image):"))
     print(f"  {'image':<26} {'pretrained':>10} {'existing':>9} {'ours':>7}")
     for _, s, v in chosen:
         print(f"  {s:<26} {v['pretrained']:10.2f} {v['existing_tta']:9.2f} {v['ours']:7.2f}")
@@ -220,6 +224,9 @@ def main():
         q.add_argument('--target', default='SOTS_Indoor')
         if name == 'select':
             q.add_argument('--k', type=int, default=8, help=argparse.SUPPRESS)
+            q.add_argument('--rule', choices=['margin', 'median'], default='margin',
+                           help='margin (Fig. 1): clearest wins; median (experiments figure): the --k images whose '
+                                'gain over the pretrained model is closest to the median of the set')
         else:
             q.add_argument('--image', default=None)
             q.add_argument('--box', default=None)

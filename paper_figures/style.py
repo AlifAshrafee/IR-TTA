@@ -22,6 +22,9 @@ C_OURS = '#2a78d6'
 C_DCTTA = '#eb6834'
 C_TARGET = '#3d3d3a'   # target images (NSS map): dark neutral outline, separated from both hues by lightness
 C_SOURCE = '#7a7a76'
+C_PRE = '#898781'      # the pretrained model in the experiment figures
+C_MUTED = '#b9b8b3'    # de-emphasised marks (control variants, connectors)
+MARK = {'ours': 'o', 'dctta': '^', 'source': 's'}   # identity is never colour alone (greyscale print)
 INK, INK2, GRID = '#1f1f1d', '#5c5c58', '#d9d8d4'
 # diverging (harm <-> gain): red / blue poles, neutral grey midpoint
 DIV_NEG, DIV_MID, DIV_POS = '#c0392b', '#f0efec', '#1c5cab'
@@ -39,7 +42,8 @@ FAMILY = {'Rain100H': 'rain', 'SOTS_Indoor': 'haze', 'DenseHaze': 'haze', 'OHAZY
 def setup(fontsize=8):
     plt.rcParams.update({
         'font.family': 'serif',
-        'font.serif': ['Times New Roman', 'Times', 'Nimbus Roman', 'Nimbus Roman No9 L', 'STIXGeneral'],
+        'font.serif': ['Times New Roman', 'Times', 'TeX Gyre Termes', 'Nimbus Roman', 'Nimbus Roman No9 L',
+                       'STIXGeneral'],
         'mathtext.fontset': 'stix',
         'font.size': fontsize, 'axes.titlesize': fontsize, 'axes.labelsize': fontsize,
         'xtick.labelsize': fontsize - 1, 'ytick.labelsize': fontsize - 1, 'legend.fontsize': fontsize - 1,
@@ -114,3 +118,51 @@ def pairs(vals):
                 if all((r, bb, s, t) in vals for r in ('source', 'dctta', 'ours')):
                     out.append((bb, s, t))
     return out
+
+
+# ---------------------------------------------------------------------------- #
+# experiment figures: shared helpers
+# ---------------------------------------------------------------------------- #
+TABLES = os.path.join(REPO, 'results', 'suite')
+FIGS = os.path.join(REPO, 'results', 'figures')
+# table order of the paper (grouped by family, low light last)
+ORDER = ['Rain100H', 'SOTS_Indoor', 'DenseHaze', 'OHAZY', 'Kodak24_Poisson', 'HIDE', 'DPDD', 'LOLv2_Syn']
+PRETTY = {'Rain100H': 'Rain100H', 'SOTS_Indoor': 'SOTS-Indoor', 'DenseHaze': 'DenseHaze', 'OHAZY': 'O-HAZY',
+          'Kodak24_Poisson': 'Kodak24', 'HIDE': 'HIDE', 'LOLv2_Syn': 'LOLv2-Syn', 'DPDD': 'DPDD'}
+
+
+def md_rows(path):
+    """Rows of the first markdown table of a file as lists of stripped cells (header first)."""
+    if not os.path.exists(path):
+        raise SystemExit(f"missing {path}: run `bash scripts/run.sh tables` first")
+    rows = []
+    with open(path) as f:
+        for line in f:
+            if line.startswith('|') and not set(line.strip()) <= set('|-: '):
+                rows.append([c.strip().strip('*').strip() for c in line.strip().strip('|').split('|')])
+    return rows
+
+
+def clean(ax, grid=None):
+    """Recessive axes: no top / right spine, optional hairline grid ('x' or 'y') behind the marks."""
+    for sp in ('top', 'right'):
+        ax.spines[sp].set_visible(False)
+    if grid:
+        ax.grid(axis=grid, color=GRID, linewidth=0.4)
+        ax.set_axisbelow(True)
+
+
+def fmt(v, nd=2):
+    """Signed number with a true minus sign."""
+    return f"{v:+.{nd}f}".replace('-', '\u2212')
+
+
+def save(fig, name, out=None):
+    out = out or FIGS
+    os.makedirs(out, exist_ok=True)
+    base = os.path.join(out, name)
+    fig.savefig(base + '.pdf')
+    fig.savefig(base + '.png', dpi=300)
+    plt.close(fig)
+    print(f"-> {base}.pdf (+ .png preview)")
+    return base
