@@ -14,8 +14,10 @@
 #   noshift   ours (+ DCTTA for PromptIR) on the sources' own test distributions (no degradation shift)
 #   controls  PromptIR 3-task: generic pairs (G1), conditioning on another test set (S1), random initialisation
 #             (Z500, Z5000) and random initialisation with generic pairs (ZG500)
-#   ablation  PromptIR, both settings: ours without ABC selection / colour statistics / exposure matching /
-#             the under-exposure rule (5-task)
+#   ablation  $BBS x $SETTINGS: ours without ABC selection (noABC), exposure matching (noExposure) or the
+#             under-exposure rule (noDark); variants in $ABL_TAGS, run variant by variant so the first ones finish
+#             first. PromptIR also has noColor (colour statistics), kept for the supplementary.
+#             e.g. GPU=0 BBS=adair bash scripts/run.sh ablation   (one backbone per GPU)
 #   oracle    results/oracle, PromptIR 5-task blur / low-light: ours, the right family only, real pairs
 #   count     results/count, 5-task: adapted parameters that receive a gradient, ours and DCTTA (table_cost)
 #   tables    aggregate + paper tables (results/suite/table_*.md)
@@ -121,16 +123,17 @@ stage_controls() {
   done
 }
 
+# Same tags and flags as the original PromptIR ablation, so its finished runs are reused (skipped), not repeated.
+ABL_TAGS=${ABL_TAGS:-"noABC noExposure noDark"}
+declare -A ABL_ARGS=( [noABC]="--abc_k 1" [noExposure]="--exposure_match none" [noDark]="--dark_rule none"
+                      [noColor]="--no-nss_color" )
 stage_ablation() {
-  local S M T
-  for S in $SETTINGS; do
-    M=$(model_args promptir $S) || continue
-    for T in ${TESTS[$S]}; do
-      run $M --target $T --tag noABC --abc_k 1
-      run $M --target $T --tag noColor --no-nss_color
-      run $M --target $T --tag noExposure --exposure_match none
-      if [[ $S == 5task ]]; then run $M --target $T --tag noDark --dark_rule none; fi
-    done
+  local A B S M T
+  for A in $ABL_TAGS; do
+    for B in $BBS; do for S in $SETTINGS; do
+      M=$(model_args $B $S) || continue
+      for T in ${TESTS[$S]}; do run $M --target $T --tag $A ${ABL_ARGS[$A]}; done
+    done; done
   done
 }
 

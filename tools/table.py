@@ -9,6 +9,11 @@ writes into the results folder:
   table_controls.md                               PromptIR 3-task: ours vs generic pairs (G1), mismatched
                                                   conditioning (S1), random initialisation (Z500, Z5000, ZG500)
   table_ablation_3task.md, table_ablation_5task.md  PromptIR: ours without each component
+  table_ablation_family.md                        all backbones (run.sh ablation): mean change vs the pretrained
+                                                  model per degradation family, both settings pooled, plus the
+                                                  number of pairs where removing the component lowers PSNR
+  table_ablation_backbone.md                      the same, mean over each backbone's pairs (consistency check)
+  table_ablation_all_3task.md, ..._5task.md       the same per test set, mean over backbones (supplementary)
   table_oracle.md                                 PromptIR 5-task blur / low-light: ours, right family, real pairs
   table_cost.md                                   adaptation time, memory and adapted parameters (--count:
                                                   the run.sh count runs, parameters that receive a gradient)
@@ -34,6 +39,10 @@ CONTROLS = [('F1', 'Ours'), ('G1', 'Generic pairs (no inference)'), ('S1', 'Cond
             ('ZG500', 'Random init, generic pairs')]
 ABLATION = [('F1', 'Ours'), ('noABC', 'w/o ABC pair selection'), ('noColor', 'w/o colour statistics'),
             ('noExposure', 'w/o exposure matching'), ('noDark', 'w/o under-exposure rule')]
+ABLATION_ALL = [('F1', 'Ours'), ('noABC', 'w/o ABC pair selection'), ('noExposure', 'w/o exposure matching'),
+                ('noDark', 'w/o under-exposure rule')]
+FAMILIES = [('Rain', ['Rain100H']), ('Haze', ['SOTS_Indoor', 'DenseHaze', 'OHAZY']), ('Noise', ['Kodak24_Poisson']),
+            ('Blur', ['HIDE', 'DPDD']), ('Low light', ['LOLv2_Syn'])]
 ORACLE_SETS = ['HIDE_val', 'LOLv2_Syn_val', 'DPDD']
 ORACLE_ROWS = [('F1', 'Ours'), ('F1fam', 'Right family (oracle)'), ('ORpair', 'Real pairs of the target operator')]
 SHORT = {'Rain100H': 'Rain100H', 'SOTS_Indoor': 'SOTS-In', 'DenseHaze': 'DenseHaze', 'OHAZY': 'O-HAZY',
@@ -159,6 +168,53 @@ def delta_table(idx, rows, setting, cols, seed, bb='promptir'):
     return '\n'.join(lines)
 
 
+def ablation_pairs(idx, rows, seed):
+    """{tag: {(backbone, setting, target): PSNR change vs the pretrained model}} over the pairs where every row of
+    ``rows`` has a run, so all rows are averaged over the same pairs."""
+    src = {k[1:4]: v for k, v in idx.items() if k[0] == 'source'}
+    pairs = [(bb, s, t) for bb in NAMES for s in ('3task', '5task') for t in TESTS[s]
+             if (bb, s, t) in src and all((tag, bb, s, t, str(seed)) in idx for tag, _ in rows)]
+    return {tag: {p: idx[(tag,) + p + (str(seed),)] - src[p] for p in pairs} for tag, _ in rows}, pairs
+
+
+def ablation_tables(idx, rows, seed):
+    """Pooled ablation over every backbone and setting with complete runs: (family table, backbone table,
+    {setting: per-set table}). Cells are mean changes vs the pretrained model; 'Lower' counts the pairs where the
+    variant is below ours (removing the component lowers PSNR)."""
+    d, pairs = ablation_pairs(idx, rows, seed)
+    if not pairs:
+        return None
+    mean = lambda xs: f"{sum(xs) / len(xs):+.2f}" if xs else ''  # noqa: E731
+    ours = d[rows[0][0]]
+    bbs = sorted({p[0] for p in pairs}, key=list(NAMES).index)
+    head = ['Variant'] + [f for f, _ in FAMILIES] + ['All', 'Lower than ours']
+    fam = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)]
+    for tag, label in rows:
+        cells = [mean([v for p, v in d[tag].items() if p[2] in sets]) for _, sets in FAMILIES]
+        lower = '' if tag == rows[0][0] else f"{sum(d[tag][p] < ours[p] for p in pairs)}/{len(pairs)}"
+        fam.append('| ' + ' | '.join([label] + cells + [mean(list(d[tag].values())), lower]) + ' |')
+    note = (f"Mean over {len(pairs)} backbone-setting-set pairs ({', '.join(NAMES[b] for b in bbs)}; both settings "
+            f"pooled; seed {seed}).")
+    head = ['Backbone'] + [label for _, label in rows]
+    bt = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)]
+    for bb in bbs:
+        bt.append('| ' + ' | '.join([NAMES[bb]] + [mean([v for p, v in d[tag].items() if p[0] == bb])
+                                                    for tag, _ in rows]) + ' |')
+    per_set = {}
+    for st in ('3task', '5task'):
+        cols = [t for t in TESTS[st] if any(p[1] == st and p[2] == t for p in pairs)]
+        if not cols:
+            continue
+        head = ['Variant'] + [SHORT.get(c, c) for c in cols] + ['Mean']
+        lines = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)]
+        for tag, label in rows:
+            sel = {p: v for p, v in d[tag].items() if p[1] == st}
+            lines.append('| ' + ' | '.join([label] + [mean([v for p, v in sel.items() if p[2] == c]) for c in cols]
+                                           + [mean(list(sel.values()))]) + ' |')
+        per_set[st] = '\n'.join(lines)
+    return note + '\n\n' + '\n'.join(fam), note + '\n\n' + '\n'.join(bt), per_set
+
+
 def updated_counts(runs):
     """{(backbone, 'dctta' | 'ours'): adapted parameters that received a gradient} from runs.csv (any run that
     tracked it, e.g. ``run.sh count``). The count is architectural (which modules the forward pass uses), so one
@@ -232,6 +288,17 @@ def main():
     for s in ('3task', '5task'):
         write(args.root, f'table_ablation_{s}.md', f"## Ablation, PromptIR {s} (seed {args.seed}) -- PSNR (dB), change"
               f" vs the pretrained model\n\n" + delta_table(aidx, ABLATION, s, TESTS[s], args.seed))
+    aidx_all = runs_index(runs, {t for t, _ in ABLATION_ALL})
+    pooled = ablation_tables(aidx_all, ABLATION_ALL, args.seed)
+    if pooled:
+        fam, bt, per_set = pooled
+        write(args.root, 'table_ablation_family.md', "## Ablation, all backbones -- change in PSNR (dB) vs the "
+              "pretrained model, per degradation family\n\n" + fam)
+        write(args.root, 'table_ablation_backbone.md', "## Ablation -- mean change in PSNR (dB) vs the pretrained "
+              "model, per backbone\n\n" + bt)
+        for st, md in per_set.items():
+            write(args.root, f'table_ablation_all_{st}.md', f"## Ablation, {st}, mean over backbones -- change in PSNR"
+                  f" (dB) vs the pretrained model\n\n" + md)
     if args.oracle:
         oidx = runs_index(read_csv(os.path.join(args.oracle, 'runs.csv')), {t for t, _ in ORACLE_ROWS})
         write(args.root, 'table_oracle.md', f"## Oracle analysis, PromptIR 5-task (seed {args.seed}) -- PSNR (dB), "
