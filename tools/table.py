@@ -169,12 +169,14 @@ def delta_table(idx, rows, setting, cols, seed, bb='promptir'):
 
 
 def ablation_pairs(idx, rows, seed):
-    """{tag: {(backbone, setting, target): PSNR change vs the pretrained model}} over the pairs where every row of
-    ``rows`` has a run, so all rows are averaged over the same pairs."""
+    """{tag: {(backbone, setting, target): PSNR change vs the pretrained model}}. Pairs are those where ours and the
+    pretrained model have runs; each variant covers the pairs it has finished, so the tables can be read while
+    run.sh ablation is still going. Once every variant is complete, all rows share the same pairs."""
     src = {k[1:4]: v for k, v in idx.items() if k[0] == 'source'}
     pairs = [(bb, s, t) for bb in NAMES for s in ('3task', '5task') for t in TESTS[s]
-             if (bb, s, t) in src and all((tag, bb, s, t, str(seed)) in idx for tag, _ in rows)]
-    return {tag: {p: idx[(tag,) + p + (str(seed),)] - src[p] for p in pairs} for tag, _ in rows}, pairs
+             if (bb, s, t) in src and (rows[0][0], bb, s, t, str(seed)) in idx]
+    return {tag: {p: idx[(tag,) + p + (str(seed),)] - src[p] for p in pairs if (tag,) + p + (str(seed),) in idx}
+            for tag, _ in rows}, pairs
 
 
 def ablation_tables(idx, rows, seed):
@@ -191,10 +193,12 @@ def ablation_tables(idx, rows, seed):
     fam = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)]
     for tag, label in rows:
         cells = [mean([v for p, v in d[tag].items() if p[2] in sets]) for _, sets in FAMILIES]
-        lower = '' if tag == rows[0][0] else f"{sum(d[tag][p] < ours[p] for p in pairs)}/{len(pairs)}"
-        fam.append('| ' + ' | '.join([label] + cells + [mean(list(d[tag].values())), lower]) + ' |')
+        lower = '' if tag == rows[0][0] else f"{sum(d[tag][p] < ours[p] for p in d[tag])}/{len(d[tag])}"
+        fam.append('| ' + ' | '.join([label] + cells + [mean(list(d[tag].values())), lower]) + ' |')  # noqa: E501
+    partial = [label for tag, label in rows if len(d[tag]) < len(pairs)]
     note = (f"Mean over {len(pairs)} backbone-setting-set pairs ({', '.join(NAMES[b] for b in bbs)}; both settings "
-            f"pooled; seed {seed}).")
+            f"pooled; seed {seed})." + (f" INCOMPLETE, averaged over the finished pairs only: {', '.join(partial)} "
+                                        f"(see the 'Lower than ours' counts)." if partial else ''))
     head = ['Backbone'] + [label for _, label in rows]
     bt = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)]
     for bb in bbs:
