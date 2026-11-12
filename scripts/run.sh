@@ -197,6 +197,7 @@ stage_qualitative() {
 stage_plots() {
   python paper_figures/controls.py
   python paper_figures/cost.py
+  python paper_figures/cost.py --width column
   python paper_figures/reliability.py
 }
 

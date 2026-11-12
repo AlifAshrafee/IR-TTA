@@ -78,7 +78,8 @@ writes a vector PDF and a PNG preview to `results/figures/`.
 |---|---|---|---|---|
 | `fig:qualitative` | main, text width, 3.3 in tall | `GPU=0 bash scripts/run.sh qualitative` | yes | `qualitative_grid.pdf` |
 | `fig:controls` | main, one column, 1.55 in tall | `python paper_figures/controls.py` | no | `controls.pdf` |
-| `supp:cost` | supplementary, text width | `python paper_figures/cost.py` | no | `cost.pdf` |
+| `fig:cost` | main, one column, 1.6 in tall | `python paper_figures/cost.py --width column` | no | `cost_column.pdf` |
+| (same, wide) | text width, if it moves back to the supplementary | `python paper_figures/cost.py` | no | `cost.pdf` |
 | `fig:reliability` | supplementary, one column | `python paper_figures/reliability.py` | no | `reliability.pdf` |
 
 `bash scripts/run.sh plots` runs the three table-driven scripts (after `run.sh tables`). Copies built from the Nov 9

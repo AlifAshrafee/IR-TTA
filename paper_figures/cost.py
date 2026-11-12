@@ -1,6 +1,7 @@
 """Fig. `supp:cost` (supplementary): cost of adaptation against DCTTA, five-task setting.
 
     python paper_figures/cost.py                  # -> results/figures/cost.{pdf,png}  (text width)
+    python paper_figures/cost.py --width column   # -> results/figures/cost_column.{pdf,png}  (one column, main paper)
 
 Reads results/suite/table_cost.md (time and adapted parameters, mean over the five-task target sets) and
 table_main_5task.md (mean change in PSNR over the pretrained model).
@@ -49,11 +50,14 @@ def legend(fig, y=0.995):
 
 def panels(d, a):
     bbs = list(d)
-    fig, axes = plt.subplots(1, 3, figsize=(S.TEXT_W, 1.75), sharey=True,
-                             gridspec_kw=dict(wspace=0.10, left=0.085, right=0.985, bottom=0.2, top=0.87))
-    spec = [('time', 'adaptation time per target set (s)', '{:.0f}'),
-            ('params', 'adapted parameters (M)', '{:.1f}'),
-            ('gain', 'mean change in PSNR over pretrained (dB)', None)]
+    col = a.width == 'column'
+    fig, axes = plt.subplots(1, 3, figsize=(S.COL_W if col else S.TEXT_W, 1.6 if col else 1.75), sharey=True,
+                             gridspec_kw=dict(wspace=0.07, left=0.165, right=0.99, bottom=0.2, top=0.88) if col else
+                             dict(wspace=0.10, left=0.085, right=0.985, bottom=0.2, top=0.87))
+    spec = [('time', 'time per set (s)' if col else 'adaptation time per target set (s)', '{:.0f}'),
+            ('params', 'adapted params (M)' if col else 'adapted parameters (M)', '{:.1f}'),
+            ('gain', 'change in PSNR (dB)' if col else 'mean change in PSNR over pretrained (dB)', None)]
+    fs, ms, dx = (6.0, 3.6, 0.07) if col else (6.5, 4.8, 0.035)
     for ax, (k, xl, f) in zip(axes, spec):
         lo = min(min(d[b][m][k] for m in LABEL) for b in bbs)
         hi = max(max(d[b][m][k] for m in LABEL) for b in bbs)
@@ -64,14 +68,18 @@ def panels(d, a):
             ax.plot([v['dctta'], v['ours']], [i, i], color=S.C_MUTED, linewidth=1.2, zorder=1,
                     solid_capstyle='round')
             for m in LABEL:
-                ax.plot(v[m], i, marker=S.MARK[m], markersize=4.8, color=COLOR[m], markeredgecolor='white',
-                        markeredgewidth=0.5, zorder=3)
+                ax.plot(v[m], i, marker=S.MARK[m], markersize=ms, color=COLOR[m], markeredgecolor='white',
+                        markeredgewidth=0.5, zorder=4 if m == 'dctta' else 3)
                 right = v[m] >= v['ours' if m == 'dctta' else 'dctta']
-                ax.text(v[m] + (0.035 if right else -0.035) * span, i, f.format(v[m]) if f else S.fmt(v[m]),
-                        va='center', ha='left' if right else 'right', fontsize=6.5, color=S.INK)
+                ax.text(v[m] + (dx if right else -dx) * span, i, f.format(v[m]) if f else S.fmt(v[m]),
+                        va='center', ha='left' if right else 'right', fontsize=fs, color=S.INK)
         if k == 'gain':
             ax.axvline(0, color=S.INK2, linewidth=0.6, zorder=0)
-        ax.set_xlim(lo - (0.16 if k == 'gain' else 0.07) * span, hi + 0.17 * span)
+        pl, pr = ((0.42 if k == 'gain' else 0.30), 0.42) if col else ((0.16 if k == 'gain' else 0.07), 0.17)
+        ax.set_xlim(lo - pl * span, hi + pr * span)
+        if col:
+            ax.set_xticks({'time': [0, 1000], 'params': [0, 10, 20], 'gain': [-4, 0]}[k])
+            ax.xaxis.label.set_size(7)
         ax.set_xlabel(xl, labelpad=2)
         ax.set_ylim(len(bbs) - 0.5, -0.5)
         ax.set_yticks(range(len(bbs)))
@@ -80,11 +88,13 @@ def panels(d, a):
         S.clean(ax, 'x')
         ax.spines['left'].set_visible(False)
     legend(fig)
-    return fig, 'cost'
+    return fig, 'cost_column' if col else 'cost'
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--width', choices=['text', 'column'], default='text',
+                   help='text: 6.875 in (figure*); column: 3.28 in, for the main paper')
     p.add_argument('--tables', default=S.TABLES, help=argparse.SUPPRESS)
     p.add_argument('--out', default=S.FIGS, help=argparse.SUPPRESS)
     a = p.parse_args()
