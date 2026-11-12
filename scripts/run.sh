@@ -178,7 +178,7 @@ stage_figures() {
   python paper_figures/qualitative.py export $Q
 }
 
-QUAL_ROWS=${QUAL_ROWS:-"adair:5task:Rain100H moceir:3task:OHAZY bioir:3task:Kodak24_Poisson mirage:5task:DPDD"}
+QUAL_ROWS=${QUAL_ROWS:-"adair:5task:Rain100H moceir:3task:OHAZY bioir:3task:Kodak24_Poisson promptir:5task:SOTS_Indoor"}
 QUAL_NAME=${QUAL_NAME:-qualitative_grid}
 stage_qualitative() {
   local EXP=figure_runs R B S T M N

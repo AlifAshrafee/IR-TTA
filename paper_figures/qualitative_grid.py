@@ -33,7 +33,7 @@ import style as S  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
 
-DEFAULT_ROWS = ['adair:5task:Rain100H', 'moceir:3task:OHAZY', 'bioir:3task:Kodak24_Poisson', 'mirage:5task:DPDD']
+DEFAULT_ROWS = ['adair:5task:Rain100H', 'moceir:3task:OHAZY', 'bioir:3task:Kodak24_Poisson', 'promptir:5task:SOTS_Indoor']
 COLS = [('input', 'Input', None), ('pretrained', 'Pretrained', S.C_PRE), ('existing_tta', '+ DCTTA', S.C_DCTTA),
         ('ours', '+ Ours', S.C_OURS), ('gt', 'Ground truth', None)]
 BOX = '#ffd21f'
