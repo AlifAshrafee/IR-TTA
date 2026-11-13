@@ -7,6 +7,7 @@ the per-image results of the tables' runs). Everything is written to `results/fi
 |---|---|---|---|
 | Fig. 1 (a): example images of each degradation shift | `python paper_figures/shift_crops.py` | no | `shift/<source>_to_<target>/*.png`, `shift/contact_*.png` |
 | Fig. 1 (b): images of one test case | `GPU=0 bash scripts/run.sh figures` | yes | `qualitative/<set>/<image>/*.png`, `qualitative/contact_<set>.png` |
+| Fig. 1 (b) teaser: target stack, simulated pairs, outputs | `python paper_figures/teaser_b.py outputs` / `pairs` | yes | `teaser_b/outputs/<image>/*.png`, `teaser_b/pairs/*/*.png`, `teaser_b/contact_*.png` |
 | Experiments: mean PSNR per backbone, pretrained -> ours | `python paper_figures/gain_per_backbone.py` | no | `gain_per_backbone.{pdf,png}` |
 | Analysis: NSS space of source / target / simulated crops | `python paper_figures/nss_map.py --source_set SOTS_Outdoor --target OHAZY` | optional | `nss_map/*.{pdf,md}` |
 
@@ -17,6 +18,23 @@ Exports evenly spaced degraded images of a source (training) test set and of its
 Rain100H, SOTS-Outdoor -> O-HAZY / DenseHaze, BSD68 σ25 -> Kodak24-Poisson, GoPro -> HIDE / DPDD, LOL -> LOLv2-S.
 `--pairs A:B C:D` chooses pairs, `--n` images per set, `--crop S` exports random S x S crops instead of whole
 images, `--gt` also saves the clean references.
+
+## teaser_b.py
+
+The real images behind each box of panel (b): no ground truth is shown anywhere.
+
+```bash
+# 1. DCTTA and ours on the whole target set (once; every image saved to results/teaser_runs), the ranking of all
+#    images by ours' margin over max(input, DCTTA), and the chosen targets' input / existing_tta / ours PNGs
+CUDA_VISIBLE_DEVICES=0 python paper_figures/teaser_b.py outputs --targets <img> <img> <img>
+# 2. simulated pairs: clean DIV2K crops degraded by the method's own simulator and ABC selection against the target set
+python paper_figures/teaser_b.py pairs --targets <img> <img> --clean <DIV2K>/0001.png:400,300 <DIV2K>/0123.png
+```
+
+Defaults: Bio-IR 3-task on O-HAZY (`--backbone`, `--setting`, `--target` change it). `pairs`: `--crop 192` (the
+method's crop size; larger shows more scene), `--downscale F` (wider view), `--family haze` (re-draw until the
+method's selection is a haze pair; `any` keeps the first draw), `--seed` (other crops and draws). Re-running
+`outputs` with other `--targets` only exports. Full help: `python paper_figures/teaser_b.py -h`.
 
 ## gain_per_backbone.py
 
