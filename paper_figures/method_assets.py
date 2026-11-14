@@ -2,7 +2,7 @@
 
     python paper_figures/method_assets.py --target Rain100H --setting 5task            # everything
     python paper_figures/method_assets.py --target Rain100H --setting 5task --image rain-042 --seed 3
-    python paper_figures/method_assets.py --only space math                            # no data, no torch
+    python paper_figures/method_assets.py --only space                                 # no data, no torch
 
 Everything is written to results/figures/method_assets/<target>_<setting>/ (PNG with a transparent background and SVG):
 
@@ -23,7 +23,7 @@ Everything is written to results/figures/method_assets/<target>_<setting>/ (PNG 
      distance_by_family.*   distance of every candidate of 64 clean crops to the target Gaussian, per family, and
                             the share of accepted pairs per family (how the family is inferred without a classifier)
   schematic/   stat_space.*   illustration (not data) of the selection in statistic space
-  math/        the formulas of the method as images, in the paper's notation
+  math/        (only with `--only math`) the formulas of the method as images; not part of the figure
   summary.md   the numbers behind the assets (families, distances, accepted shares)
 
 Arguments
@@ -35,7 +35,8 @@ Arguments
   --seed      changes the crops, the clean image and the candidate draws; try a few and keep the clearest
   --pick      use the n-th clean crop whose candidates cover at least --min_families families (default 0, the first)
   --min_families  default: 4 (5task) or 3 (3task), so the candidate strip shows several operators
-  --only      any of: data plots space math (default: all). `plots` re-draws from the cached numbers without torch.
+  --only      any of: data plots space math (default: data plots space; formulas are not drawn unless asked).
+              `plots` re-draws from the cached numbers without torch.
   --recompute redo the data step even if its cache exists
   --no_labels schematic/ without text, to label it in Lucidchart
 
@@ -491,7 +492,7 @@ def main():
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--pick', type=int, default=0)
     p.add_argument('--min_families', type=int, default=None)
-    p.add_argument('--only', nargs='+', default=['data', 'plots', 'space', 'math'],
+    p.add_argument('--only', nargs='+', default=['data', 'plots', 'space'],
                    choices=['data', 'plots', 'space', 'math'])
     p.add_argument('--recompute', action='store_true')
     p.add_argument('--no_labels', action='store_true')
