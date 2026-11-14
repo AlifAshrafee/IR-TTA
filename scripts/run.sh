@@ -25,6 +25,8 @@
 #   qualitative  experiments figure (fig:qualitative): for every row of QUAL_ROWS (backbone:setting:set), picks the
 #             images closest to the set's median gain, re-runs pretrained / DCTTA / ours saving only those images,
 #             then composes results/figures/$QUAL_NAME.pdf (paper_figures/qualitative_grid.py)
+#   method_images  method figure: pretrained and ours on METHOD_ROW (backbone:setting:set, default
+#             adair:5task:Rain100H), saving every restored image to results/method_runs (no DCTTA run)
 #   plots     the figures drawn from the tables, no GPU: controls, cost, reliability (results/figures/*.pdf)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -192,6 +194,17 @@ stage_qualitative() {
     run --method dctta $M --target $T --save_images --save_names $N
   done
   python paper_figures/qualitative_grid.py --rows $QUAL_ROWS --name $QUAL_NAME
+}
+
+METHOD_ROW=${METHOD_ROW:-adair:5task:Rain100H}
+stage_method_images() {   # method figure: pretrained and ours on one target set, every restored image saved
+  local EXP=method_runs B S T M
+  IFS=: read -r B S T _ <<< "$METHOD_ROW"
+  M=$(model_args $B $S) || return 0
+  run --method source $M --target $T --save_images
+  ours $M --target $T --save_images
+  echo "saved to results/method_runs; export one image with:"
+  echo "  python paper_figures/qualitative.py export --exp method_runs --backbone $B --setting $S --target $T --image <name>"
 }
 
 stage_plots() {

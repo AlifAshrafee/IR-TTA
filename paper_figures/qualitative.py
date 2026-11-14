@@ -149,19 +149,21 @@ def export_one(a, runs, stem, box=None):
     lq, gt = load_pair(a.target, stem)
     imgs = {'input': lq, 'gt': gt}
     for c in ('pretrained', 'existing_tta', 'ours'):
+        if c not in runs:   # --exp method_runs has no DCTTA run
+            continue
         p = os.path.join(runs[c], 'images', stem + '.png')
         if not os.path.exists(p):
-            print(f"[export] {stem}: {c} image not saved by the re-run (run.sh figures); skipped")
+            print(f"[export] {stem}: {c} image not saved in {runs[c]}; skipped")
             return None
         imgs[c] = np.asarray(Image.open(p).convert('RGB'))
     bx, by, bs = box or auto_box(imgs['pretrained'], imgs['ours'], gt)
     od = os.path.join(OUT, a.target, stem)
     os.makedirs(od, exist_ok=True)
-    psnr = {c: per_image(runs[c], a.target).get(stem) for c in ('pretrained', 'existing_tta', 'ours')}
+    psnr = {c: per_image(runs[c], a.target).get(stem) for c in ('pretrained', 'existing_tta', 'ours') if c in runs}
     psnr['input'] = psnr_u8(lq, gt, a.target in Y_TARGETS)
     lw = max(2, int(round(gt.shape[1] / 250)))
     boxed = {}
-    for c in COLS:
+    for c in [c for c in COLS if c in imgs]:
         im = Image.fromarray(imgs[c])
         im.save(os.path.join(od, f'{c}.png'))
         b = im.copy()
@@ -176,10 +178,12 @@ def export_one(a, runs, stem, box=None):
 
 
 def cmd_export(a):
-    runs = find_runs(FIG_RUNS, a.backbone, a.setting, a.target)
-    miss = [c for c in ROWKEY.values() if c not in runs]
+    root = os.path.join(S.REPO, 'results', a.exp)
+    runs = find_runs(root, a.backbone, a.setting, a.target)
+    miss = [c for c in ('pretrained', 'ours') if c not in runs]
     if miss:
-        raise SystemExit(f"[export] no {miss} re-run with saved images in {FIG_RUNS}: run `bash scripts/run.sh figures`")
+        raise SystemExit(f"[export] no {miss} run with saved images in {root}: run `bash scripts/run.sh figures` "
+                         f"(figure_runs) or `bash scripts/run.sh method_images` (method_runs)")
     if a.image:
         stems = [os.path.splitext(a.image)[0]]
     else:
@@ -193,10 +197,11 @@ def cmd_export(a):
             continue
         boxed, psnr = r
         h = 160
-        ims = [boxed[c].resize((int(boxed[c].size[0] * h / boxed[c].size[1]), h), Image.LANCZOS) for c in COLS]
+        cols = [c for c in COLS if c in boxed]
+        ims = [boxed[c].resize((int(boxed[c].size[0] * h / boxed[c].size[1]), h), Image.LANCZOS) for c in cols]
         row = Image.new('RGB', (sum(i.size[0] + 4 for i in ims), h + 16), 'white')
         d, x = ImageDraw.Draw(row), 0
-        for c, im in zip(COLS, ims):
+        for c, im in zip(cols, ims):
             row.paste(im, (x, 0))
             d.text((x + 2, h + 2), stem if c == 'gt' else f"{c} {psnr.get(c, 0):.2f}", fill=(0, 0, 0))
             x += im.size[0] + 4
@@ -229,6 +234,10 @@ def main():
                                 'gain over the pretrained model is closest to the median of the set')
         else:
             q.add_argument('--image', default=None)
+            q.add_argument('--exp', default='figure_runs',
+                           help='results/<exp> holding the runs with saved images: figure_runs (run.sh figures / '
+                                'qualitative, a few images) or method_runs (run.sh method_images, every image, '
+                                'no DCTTA)')
             q.add_argument('--box', default=None)
     a = p.parse_args()
     {'select': cmd_select, 'export': cmd_export}[a.cmd](a)

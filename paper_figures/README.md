@@ -172,5 +172,14 @@ python paper_figures/method_assets.py --demo                                    
 
 `--seed` changes the crops and the candidate draws, `--pick n` takes the n-th clean crop whose candidates cover
 several families, `--image` fixes the target image. The data step follows the method (256 target crops, 192 px, J = 8,
-exposure matched to the shown target crop); the under-exposure rule is not applied. The target image, the restored
-output and the ground truth of the figure come from `qualitative.py export` (see above).
+exposure matched to the shown target crop); the under-exposure rule is not applied.
+
+The target image, the restored output and the ground truth of the figure need the model. `run.sh qualitative` saves
+only five images per row, so the method figure has its own stage, which saves every image of one target set
+(pretrained and ours, no DCTTA run):
+
+```bash
+GPU=0 bash scripts/run.sh method_images        # METHOD_ROW=adair:5task:Rain100H by default
+python paper_figures/qualitative.py export --exp method_runs --backbone adair --setting 5task --target Rain100H --image 022
+# -> results/figures/qualitative/Rain100H/022/{input,pretrained,ours,gt}.png and psnr.json
+```
