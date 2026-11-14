@@ -148,3 +148,29 @@ If a row was already run by `run.sh figures` (Fig. 1) with other saved names, de
   ours joined by a line, every value printed.
 - `reliability.py`: every backbone, setting and target set of the main tables as one mark, one row per target set.
   The axis has one visible break so that DCTTA's large losses are shown, not clipped (`--brk` moves it).
+
+# Method figure assets
+
+`method_assets.py` writes the building blocks of the method figure (arranged in Lucidchart) to
+`results/figures/method_assets/<target>_<setting>/`, as transparent PNG and SVG.
+
+```bash
+python paper_figures/method_assets.py --target Rain100H --setting 5task               # everything (GPU optional)
+python paper_figures/method_assets.py --target Rain100H --setting 5task --image <name> --seed 3 --recompute
+python paper_figures/method_assets.py --target Rain100H --setting 5task --only plots  # re-draw, no torch
+python paper_figures/method_assets.py --only space math                               # no data needed
+python paper_figures/method_assets.py --demo                                          # preview with synthetic data
+```
+
+| Folder | Content | Source |
+|---|---|---|
+| `images/` | target image and crop, its MSCN map, a clean DIV2K crop, its J = 8 candidates (the accepted one marked), the accepted pair, one draw per operator | the method's code on real images |
+| `plots/` | MSCN histograms (target / accepted / rejected), statistic strips, the candidate panel, distances per family with the share of accepted pairs | the same numbers |
+| `schematic/` | selection in statistic space | illustration, not data |
+| `math/` | the method's formulas in the paper's notation | matplotlib mathtext |
+| `summary.md` | families, distances and accepted shares behind the assets | |
+
+`--seed` changes the crops and the candidate draws, `--pick n` takes the n-th clean crop whose candidates cover
+several families, `--image` fixes the target image. The data step follows the method (256 target crops, 192 px, J = 8,
+exposure matched to the shown target crop); the under-exposure rule is not applied. The target image, the restored
+output and the ground truth of the figure come from `qualitative.py export` (see above).
