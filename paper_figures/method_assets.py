@@ -22,7 +22,14 @@ Everything is written to results/figures/method_assets/<target>_<setting>/ (PNG 
      candidates.*           all J candidates in one panel: family, statistic strip, distance, accepted mark
      distance_by_family.*   distance of every candidate of 64 clean crops to the target Gaussian, per family, and
                             the share of accepted pairs per family (how the family is inferred without a classifier)
-  schematic/   stat_space.*   illustration (not data) of the selection in statistic space
+     candidate_distances.*  the J candidates as distance bars, nearest first (`_nolabel`: bars and markers only);
+     bar_cand<j>.png        the same bars one by one on a common scale, to sit under each candidate thumbnail
+     accepted_mix.*         families of the accepted pairs as one proportion bar: the inferred degradation
+                            (`_nolabel`: the bar only)
+  schematic/   illustrations, not data
+     stat_space.*           the selection in statistic space
+     dist_target.*, dist_<family>.*   icon of an image's MSCN distribution, one shape per operator
+     stat_vector_gray.*, stat_vector_blue.*   icon of the 32-d statistic
   math/        (only with `--only math`) the formulas of the method as images; not part of the figure
   summary.md   the numbers behind the assets (families, distances, accepted shares)
 
@@ -353,6 +360,112 @@ def plot_distance(D, out):
     return share
 
 
+def plot_bars(D, out):
+    """Distance of every candidate to the target Gaussian as a bar (real numbers): the shortest bar is accepted.
+    Writes the panel with and without text, and one bar per candidate on a common scale (to sit under its thumbnail)."""
+    order = np.argsort(D['cand_d'])
+    d = D['cand_d']
+    top = float(d.max()) * 1.04
+    j = int(order[0])
+    for k in range(len(d)):                                   # single bars, same scale, on a pale track
+        fig = plt.figure(figsize=(1.2, 0.09))
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.barh(0, top, height=1, color='#ecebe7', linewidth=0)
+        ax.barh(0, d[k], height=1, color=C_ACC if k == j else '#8f8e89', linewidth=0)
+        ax.set_xlim(0, top)
+        ax.set_ylim(-0.5, 0.5)
+        ax.set_axis_off()
+        plt.rcParams['savefig.bbox'] = None
+        save_fig(fig, os.path.join(out, 'plots', f'bar_cand{k}'))
+        plt.rcParams['savefig.bbox'] = 'tight'
+    n = len(order)
+    for text in (True, False):
+        fig = plt.figure(figsize=(2.9, 0.2 * n + 0.1))
+        ax = fig.add_axes([0.32 if text else 0.09, 0.02, 0.36 if text else 0.89, 0.96])
+        for r, k in enumerate(order):
+            fam = str(D['cand_fam'][k])
+            ax.barh(r, top, height=0.56, color='#ecebe7', linewidth=0, zorder=1)
+            ax.barh(r, d[k], height=0.56, color=C_ACC if k == j else '#8f8e89', linewidth=0, zorder=2)
+            ax.plot(-0.07 if text else -0.05, r, marker=FAM_MARK[fam], color=FAM_COLOR[fam], markersize=4.5,
+                    markeredgewidth=0, transform=ax.get_yaxis_transform(), clip_on=False)
+            if text:
+                ax.text(-0.16, r, FAM_LABEL[fam], transform=ax.get_yaxis_transform(), ha='right', va='center',
+                        fontsize=7.5)
+                ax.text(1.04, r, f"{d[k]:.1f}" + ('  accepted' if k == j else ''), ha='left', va='center',
+                        transform=ax.get_yaxis_transform(), fontsize=7.5, color=C_ACC if k == j else INK2)
+        ax.set_xlim(0, top)
+        ax.set_ylim(n - 0.5, -0.5)
+        ax.set_axis_off()
+        plt.rcParams['savefig.bbox'] = None
+        save_fig(fig, os.path.join(out, 'plots', 'candidate_distances' + ('' if text else '_nolabel')), pdf=text)
+        plt.rcParams['savefig.bbox'] = 'tight'
+
+
+def plot_mix(D, share, out):
+    """Families of the accepted pairs as one proportion bar (real numbers): the inferred degradation."""
+    fams = sorted(share, key=lambda f: -share[f])
+    for text in (True, False):
+        fig = plt.figure(figsize=(2.6, 0.62 if text else 0.2))
+        ax = fig.add_axes([0.01, 0.62 if text else 0.05, 0.98, 0.34 if text else 0.9])
+        x = 0.0
+        for f in fams:
+            w = share[f]
+            ax.barh(0, max(w - 0.006, 0), left=x + 0.003, height=1, color=FAM_COLOR[f], linewidth=0)
+            x += w
+        ax.set_xlim(0, 1)
+        ax.set_ylim(-0.5, 0.5)
+        ax.set_axis_off()
+        if text:
+            lg = fig.add_axes([0.01, 0.0, 0.98, 0.5])
+            lg.set_axis_off()
+            lg.set_xlim(0, 1)
+            lg.set_ylim(0, 1)
+            for i, f in enumerate(fams):
+                cx, cy = (i % 3) / 3 + 0.02, 0.75 - 0.5 * (i // 3)
+                lg.plot(cx, cy, marker=FAM_MARK[f], color=FAM_COLOR[f], markersize=4.5, markeredgewidth=0)
+                lg.text(cx + 0.035, cy, f"{FAM_LABEL[f]} {100 * share[f]:.0f}%", va='center', ha='left', fontsize=7.5)
+        plt.rcParams['savefig.bbox'] = None
+        save_fig(fig, os.path.join(out, 'plots', 'accepted_mix' + ('' if text else '_nolabel')), pdf=text)
+        plt.rcParams['savefig.bbox'] = 'tight'
+
+
+def plot_icons(a, out):
+    """Abstract icons (illustrations, not data): the distribution of MSCN coefficients of an image, one shape for the
+    target and one per operator, and the 32-d statistic as a row of cells."""
+    x = np.linspace(-3, 3, 241)
+    shape = {'target': (1.0, 2.0), 'noise': (1.4, 2.4), 'rain': (1.08, 1.8), 'haze': (0.62, 1.25),
+             'blur': (0.5, 1.0), 'lowlight': (0.8, 1.5)}
+    if a.near in shape and a.near != 'rain':                    # the operator on the target gets the look-alike shape
+        shape[a.near], shape['rain'] = shape['rain'], shape[a.near]
+    for name in ['target'] + SETTING[a.setting]:
+        al, be = shape[name]
+        y = np.exp(-(np.abs(x) / al) ** be)
+        y = y / (y.sum() * (x[1] - x[0]))
+        col = INK2 if name == 'target' else FAM_COLOR[name]
+        fig = plt.figure(figsize=(0.9, 0.5))
+        ax = fig.add_axes([0.03, 0.06, 0.94, 0.9])
+        ax.fill_between(x, y, color=col, alpha=0.22, linewidth=0)
+        ax.plot(x, y, color=col, linewidth=1.3, solid_capstyle='round')
+        ax.plot([-3, 3], [0, 0], color=INK2, linewidth=0.7)
+        ax.set_xlim(-3.05, 3.05)
+        ax.set_ylim(-0.02, 1.02)
+        ax.set_axis_off()
+        plt.rcParams['savefig.bbox'] = None
+        save_fig(fig, os.path.join(out, 'schematic', f'dist_{name}'))
+    r = np.random.default_rng(7)
+    v = r.uniform(0.08, 0.85, 32)
+    xs = np.concatenate([np.arange(15), 15.6 + np.arange(15), 31.2 + np.arange(2)])
+    for name, cmap in (('stat_vector_gray', 'Greys'), ('stat_vector_blue', 'Blues')):
+        fig = plt.figure(figsize=(2.2, 0.14))
+        ax = fig.add_axes([0, 0, 1, 1])
+        ax.bar(xs, np.ones(32), width=0.94, align='edge', linewidth=0, color=plt.get_cmap(cmap)(0.15 + 0.6 * v))
+        ax.set_xlim(-0.2, 33.4)
+        ax.set_ylim(0, 1)
+        ax.set_axis_off()
+        save_fig(fig, os.path.join(out, 'schematic', name))
+    plt.rcParams['savefig.bbox'] = 'tight'
+
+
 def write_summary(D, share, out):
     order = np.argsort(D['cand_d'])
     L = ["# Method-figure assets: numbers", '', "## Candidates of the shown clean crop (nearest first)", '',
@@ -503,6 +616,7 @@ def main():
     p.add_argument('--patch', type=int, default=192, help=argparse.SUPPRESS)
     p.add_argument('--max_images', type=int, default=100, help=argparse.SUPPRESS)
     p.add_argument('--demo', action='store_true', help=argparse.SUPPRESS)
+    p.add_argument('--suffix', default='', help=argparse.SUPPRESS)
     p.add_argument('--out', default=os.path.join(S.FIGS, 'method_assets'), help=argparse.SUPPRESS)
     a = p.parse_args()
     if a.min_families is None:
@@ -514,7 +628,7 @@ def main():
         if a.near not in SETTING[a.setting]:
             a.near = SETTING[a.setting][0]
     setup()
-    out = os.path.join(a.out, f"{a.target}_{a.setting}" + ('_demo' if a.demo else ''))
+    out = os.path.join(a.out, f"{a.target}_{a.setting}" + ('_demo' if a.demo else '') + (a.suffix or ''))
     os.makedirs(out, exist_ok=True)
     npz = os.path.join(out, 'numbers.npz')
     if 'data' in a.only and (a.recompute or a.demo or not os.path.exists(npz)):
@@ -526,9 +640,13 @@ def main():
         export_images(D, out)
         plot_hist(D, out)
         plot_strips(D, out)
-        write_summary(D, plot_distance(D, out), out)
+        plot_bars(D, out)
+        share = plot_distance(D, out)
+        plot_mix(D, share, out)
+        write_summary(D, share, out)
     if 'space' in a.only:
         plot_space(a, out)
+        plot_icons(a, out)
     if 'math' in a.only:
         plot_math(a, out)
     print(f"-> {out}/")

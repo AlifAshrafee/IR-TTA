@@ -165,8 +165,8 @@ python paper_figures/method_assets.py --demo                                    
 | Folder | Content | Source |
 |---|---|---|
 | `images/` | target image and crop, its MSCN map, a clean DIV2K crop, its J = 8 candidates (the accepted one marked), the accepted pair, one draw per operator | the method's code on real images |
-| `plots/` | MSCN histograms (target / accepted / rejected), statistic strips, the candidate panel, distances per family with the share of accepted pairs | the same numbers |
-| `schematic/` | selection in statistic space | illustration, not data |
+| `plots/` | candidate distance bars (`candidate_distances`, `bar_cand<j>`), families of the accepted pairs (`accepted_mix`), distances per family, MSCN histograms, statistic strips | the same numbers |
+| `schematic/` | selection in statistic space, MSCN-distribution icons (`dist_*`), statistic-vector icons | illustrations, not data |
 | `math/` | the method's formulas; only written with `--only math`, not used in the figure | matplotlib mathtext |
 | `summary.md` | families, distances and accepted shares behind the assets | |
 
