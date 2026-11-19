@@ -37,10 +37,11 @@ CONTROL_SETS = TESTS['3task']
 CONTROLS = [('F1', 'Ours'), ('G1', 'Generic pairs (no inference)'), ('S1', 'Conditioned on another test set'),
             ('Z500', 'Random init, 500 steps'), ('Z5000', 'Random init, 5000 steps'),
             ('ZG500', 'Random init, generic pairs')]
+ABC_METRIC = [('abcDiag', 'ABC, diagonal Σ_T'), ('abcEuclid', 'ABC, Euclidean distance')]   # run.sh e3
 ABLATION = [('F1', 'Ours'), ('noABC', 'w/o ABC pair selection'), ('noColor', 'w/o colour statistics'),
-            ('noExposure', 'w/o exposure matching'), ('noDark', 'w/o under-exposure rule')]
+            ('noExposure', 'w/o exposure matching'), ('noDark', 'w/o under-exposure rule')] + ABC_METRIC
 ABLATION_ALL = [('F1', 'Ours'), ('noABC', 'w/o ABC pair selection'), ('noExposure', 'w/o exposure matching'),
-                ('noDark', 'w/o under-exposure rule')]
+                ('noDark', 'w/o under-exposure rule')] + ABC_METRIC
 FAMILIES = [('Rain', ['Rain100H']), ('Haze', ['SOTS_Indoor', 'DenseHaze', 'OHAZY']), ('Noise', ['Kodak24_Poisson']),
             ('Blur', ['HIDE', 'DPDD']), ('Low light', ['LOLv2_Syn'])]
 ORACLE_SETS = ['HIDE_val', 'LOLv2_Syn_val', 'DPDD']
@@ -84,7 +85,7 @@ def row_key(r, tag):
         return 'input'
     if m == 'source':
         return 'source'
-    if m == 'dctta' and not re.sub(r'(^|_)bo=.*$', '', r.get('cfg') or ''):
+    if m == 'dctta' and (r.get('subset') or 'full') == 'full' and not re.sub(r'(^|_)bo=.*$', '', r.get('cfg') or ''):
         return 'dctta'   # the released configuration (backbone options such as MoCE-IR's routing flag allowed)
     if m == 'transfer' and (r.get('tag') or '') == tag and (num(r.get('eval_alpha')) or 1.0) == 1.0:
         return 'ours'
@@ -186,6 +187,7 @@ def ablation_tables(idx, rows, seed):
     d, pairs = ablation_pairs(idx, rows, seed)
     if not pairs:
         return None
+    rows = [rows[0]] + [(t, lab) for t, lab in rows[1:] if d[t]]   # variants without any finished run: no row
     mean = lambda xs: f"{sum(xs) / len(xs):+.2f}" if xs else ''  # noqa: E731
     ours = d[rows[0][0]]
     bbs = sorted({p[0] for p in pairs}, key=list(NAMES).index)

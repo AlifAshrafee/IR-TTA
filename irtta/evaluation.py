@@ -4,6 +4,9 @@
 * ``psnr_y``: the deraining convention (MATLAB ``rgb2ycbcr`` / BasicSR ``test_y_channel``): 8-bit RGB ->
   Y = 16 + (65.481 R + 128.553 G + 24.966 B) / 255 on [16, 235], peak 255. Rain sets are reported with it
   (``"metric": "y"`` in ``configs/datasets.json``); it reproduces the published Rain100H numbers of the backbones.
+* ``psnr_gtmean``: RGB PSNR after one global gain that gives the output the ground truth's mean grey level
+  (``out * mean(gray(gt)) / mean(gray(out))``, clipped; the GT-mean protocol of low-light enhancement, LLFlow /
+  Retinexformer). It removes the global exposure error and keeps everything else; analysis only.
 """
 import csv
 import logging
@@ -54,6 +57,18 @@ def psnr_y(out, gt):
     return 10 * math.log10(255. ** 2 / max(mse, 1e-12))
 
 
+_GRAY = (0.299, 0.587, 0.114)
+
+
+def psnr_gtmean(out, gt):
+    """RGB PSNR of (1, 3, H, W) ``out`` after scaling it to the mean grey level of ``gt`` (module docstring)."""
+    out, gt = out.detach().double().clamp(0, 1), gt.detach().double().clamp(0, 1)
+    gray = lambda t: _GRAY[0] * t[:, 0] + _GRAY[1] * t[:, 1] + _GRAY[2] * t[:, 2]  # noqa: E731
+    gain = float(gray(gt).mean()) / max(float(gray(out).mean()), 1e-8)
+    mse = float(((out * gain).clamp(0, 1) - gt).pow(2).mean())
+    return 10 * math.log10(1.0 / max(mse, 1e-12))
+
+
 def save_image_tensor(image_tensor, path):
     """1x3xHxW in [0, 1] -> 8-bit PNG."""
     arr = np.clip(image_tensor.detach().cpu().numpy()[0] * 255, 0, 255).astype(np.uint8).transpose(1, 2, 0)
@@ -62,7 +77,8 @@ def save_image_tensor(image_tensor, path):
 
 def image_row(name, restored, clean):
     psnr, ssim = compute_psnr_ssim(restored, clean)
-    return {'name': name, 'psnr': float(psnr), 'ssim': float(ssim), 'psnr_y': psnr_y(restored, clean)}
+    return {'name': name, 'psnr': float(psnr), 'ssim': float(ssim), 'psnr_y': psnr_y(restored, clean),
+            'psnr_gtmean': psnr_gtmean(restored, clean)}
 
 
 @torch.no_grad()
@@ -95,7 +111,8 @@ def summarize(rows, psnr=None, ssim=None):
         return sum(v) / len(v) if v else math.nan
 
     return {'n': len(rows), 'psnr': float(psnr) if psnr is not None else mean('psnr'),
-            'ssim': float(ssim) if ssim is not None else mean('ssim'), 'psnr_y': mean('psnr_y')}
+            'ssim': float(ssim) if ssim is not None else mean('ssim'), 'psnr_y': mean('psnr_y'),
+            'psnr_gtmean': mean('psnr_gtmean')}
 
 
 def write_rows(path, rows):

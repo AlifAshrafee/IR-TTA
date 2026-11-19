@@ -17,12 +17,13 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from .baselines.dctta.rddm.generator import ResidualDegradationGenerator
-from .baselines.dctta.tta import DCTTA
+from .baselines.dctta.tta import DCTTA, compute_tips_fisher
 from .data import CleanBank, PairBank, available_names, evenly_spaced, load_registry, resolve_spec
 from .degrade import degrade_batch, parse_families
 from .nss import GaussianModel, nss_features, random_crop_batch
 
 logger = logging.getLogger(__name__)
+_TIPS_LEAVES = ('weight', 'bias')   # DCTTA's restore_leaf_names
 
 
 def rng_checksum():
@@ -131,6 +132,11 @@ class TransferMethod(_OptimMethod):
 
     ``--oracle_pairs <set>`` (analysis only): train on real pairs of that set (the exact target operator, other
     images) instead of synthesising them.
+
+    ``--subset dctta`` (supervision x update constraint experiment): DCTTA's update constraint instead of LoRA --
+    its parameter rule, and its TIPS restoration (diagonal Fisher of the self-ensemble consistency loss over the
+    target set, computed exactly as DCTTA does in ``prepare``; the per-tensor top-``--tips_ratio`` entries of every
+    weight / bias are reset to theta_0 after each step).
     """
     name = 'transfer'
 
@@ -164,9 +170,40 @@ class TransferMethod(_OptimMethod):
             for p in self.teacher.parameters():
                 p.requires_grad_(False)
         self.target_model = None   # N(mu_T, Sigma_T) of the target NSS features (ABC)
+        self.fishers = {}          # TIPS masks (--subset dctta)
+        self.theta0 = None
+        if subset.tips:
+            self.theta0 = {n: p.detach().clone() for n, p in model.named_parameters()
+                           if p.requires_grad and n.split('.')[-1] in _TIPS_LEAVES}
+
+    def prepare(self, loader=None):
+        self._prepare_abc(loader)
+        if self.subset.tips:
+            if loader is None:
+                raise ValueError("--subset dctta (TIPS) needs the target loader")
+            with torch.random.fork_rng(devices=[]):   # keep the rest of our run's RNG stream unchanged
+                self.fishers = compute_tips_fisher(self.model, loader, self.args.tips_ratio, self.device)
+            frozen = sum(int(m.sum()) for n, (_, m) in self.fishers.items() if n in self.theta0)
+            total = sum(int(m.numel()) for n, (_, m) in self.fishers.items() if n in self.theta0)
+            logger.info(f"TIPS (--subset dctta): {frozen:,} / {total:,} entries of {len(self.fishers)} tensors are "
+                        f"restored to theta_0 after every step (ratio {self.args.tips_ratio})")
 
     @torch.no_grad()
-    def prepare(self, loader=None):
+    def _tips_restore(self):
+        """DCTTA's ``fisher_restoration``: masked entries of every adapted weight / bias back to theta_0."""
+        for name, p in self.model.named_parameters():
+            if name in self.theta0 and name in self.fishers:
+                mask = self.fishers[name][1]
+                p.data.copy_(self.theta0[name] * mask + p * (1. - mask))
+
+    @property
+    def n_params_effective(self):
+        if not self.fishers:
+            return self.n_params_adapted
+        return self.n_params_adapted - sum(int(self.fishers[n][1].sum()) for n in self.theta0 if n in self.fishers)
+
+    @torch.no_grad()
+    def _prepare_abc(self, loader=None):
         a = self.args
         if a.abc_k <= 1 or self.oracle is not None:
             return
@@ -181,10 +218,11 @@ class TransferMethod(_OptimMethod):
                 if n >= a.abc_fit_n:
                     break
         tf = torch.cat(feats, 0)
-        self.target_model = GaussianModel(tf).to(self.device)
+        self.target_model = GaussianModel(tf, metric=a.abc_metric).to(self.device)
         own = self.target_model.distance(tf)
-        logger.info(f"ABC: target NSS Gaussian from {n} crops of {a.bank_patch}px; target crops' own distance "
-                    f"median {float(own.median()):.2f}, q90 {float(torch.quantile(own, 0.9)):.2f}")
+        logger.info(f"ABC: target NSS Gaussian from {n} crops of {a.bank_patch}px, distance '{a.abc_metric}'; "
+                    f"target crops' own distance median {float(own.median()):.2f}, "
+                    f"q90 {float(torch.quantile(own, 0.9)):.2f}")
 
     def _select(self, cand):
         return self.target_model.distance(self._feat(cand))
@@ -235,6 +273,8 @@ class TransferMethod(_OptimMethod):
             loss = F.l1_loss(out, c)
             loss.backward()
             self.optimizer.step()
+            if self.fishers:
+                self._tips_restore()
             self.steps += 1
             loss_val = float(loss)
             self.last_stats = {'loss': loss_val, 'fams': '+'.join(fams), **st}
@@ -245,14 +285,21 @@ class DCTTAMethod(_OptimMethod):
     """The released DCTTA (EMA teacher, self-ensemble pseudo-labels, RDDM re-degradation, TIPS), on any backbone:
     ``--subset full`` applies its parameter rule per backbone (``irtta.backbones.TRAIN_PREFIXES``). Construction
     order (optimiser -> DCTTA [VGG under fork_rng] -> generator) is the released one, so for PromptIR the run is
-    numerically the released code."""
+    numerically the released code.
+
+    ``--subset lora<r>`` (supervision x update constraint experiment): DCTTA's objective on our rank-r update. TIPS
+    is not applied: LoRA replaces DCTTA's update constraint, and TIPS is defined on weight / bias entries (its
+    restoration never touches LoRA factors, and the Fisher of a zero-initialised B leaves A's Fisher zero)."""
     name = 'dctta'
 
     def __init__(self, model, subset, args, device):
         super().__init__(model, subset, args, device)
         self._build_optimizer()
+        self.use_tips = not subset.lora_modules
+        if not self.use_tips:
+            logger.info("dctta on a LoRA subset: TIPS off (the rank constraint replaces DCTTA's update constraint)")
         self.tta = DCTTA(model, self.optimizer, teacher_weight=args.teacher_weight, ema_decay=args.ema_decay,
-                         fisher_ratio=args.tips_ratio, use_fisher=True,
+                         fisher_ratio=args.tips_ratio, use_fisher=self.use_tips,
                          pixel_weight=args.pixel_weight, perceptual_weight=args.perceptual_weight,
                          lowpass_weight=args.lowpass_weight, device=device)
         self.checksum = rng_checksum()
@@ -262,6 +309,8 @@ class DCTTAMethod(_OptimMethod):
                                                       sum_scale=args.gen_sum_scale)
 
     def prepare(self, loader=None):
+        if not self.use_tips:
+            return
         if loader is None:
             raise ValueError("DCTTA's TIPS needs the target patch loader")
         self.tta.compute_fisher(loader)

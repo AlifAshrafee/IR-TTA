@@ -60,6 +60,18 @@ def test_run_ids():
                 '--abc_k', '1', '--exposure_match', 'none', '--max_steps', '2', '--bank_patch', '32',
                 '--bank_batch', '2', '--patch_size', '64', '--tag', 'o']) == \
         'transfer-lora16-none-transductive-Tiny-tiny-lr0.0001-s23-bp=32_bb=2_em=none_ps=64_ms=2_orp=Tiny-o'
+    # supplementary: E3 (ABC metric), E1 (DCTTA on LoRA, ours on DCTTA's update constraint)
+    assert rid(p3 + ['--target', 'Rain100H', '--tag', 'abcDiag', '--abc_metric', 'diag']) == (
+        'transfer-lora16-none-transductive-Rain100H-3task-lr0.0001-s23-'
+        'fam=noise_rain_haze_em=camera_drl=source_dac=anchor_nc=True_abc=8_am=diag_ms=500-abcDiag')
+    assert rid(p3 + ['--target', 'Rain100H', '--tag', 'G1', '--abc_k', '1', '--exposure_match', 'none',
+                     '--dark_rule', 'none', '--abc_metric', 'euclid']).endswith('em=none_ms=500-G1')
+    assert rid(p3 + ['--target', 'Rain100H', '--method', 'dctta', '--subset', 'dctta']) == \
+        'dctta-full-tips-transductive-Rain100H-3task-lr0.0002-s23'
+    assert rid(p5 + ['--target', 'DPDD', '--method', 'dctta', '--subset', 'lora16', '--lr', '1e-4',
+                     '--tag', 'E1']) == 'dctta-lora16-none-transductive-DPDD-5task-lr0.0001-s23-E1'
+    assert rid(p5 + ['--target', 'DPDD', '--subset', 'dctta', '--lr', '2e-4', '--tag', 'E1']).startswith(
+        'transfer-dctta-tips-transductive-DPDD-5task-lr0.0002-s23-fam=all_')
     a = get_args(['--ckpt', 'pretrain/moceir/MoCE_IR_AIO3/last.ckpt', '--backbone', 'moceir', '--target', 'HIDE'])
     assert a.source == '3task' and a.families == 'noise+rain+haze' and a.max_steps == 500 and a.abc_k == 8
 
@@ -79,6 +91,8 @@ def test_lora_zero_init_and_rng():
     full = apply_subset(_model(), 'full')
     _, ref = collect_params(configure_model(_model(), DEFAULT_TRAIN_PREFIXES))
     assert full.names == ref, "'full' differs from DCTTA's prefix rule"
+    dc = apply_subset(_model(), 'dctta')
+    assert dc.names == ref and dc.tips and not full.tips, "'dctta' = DCTTA's prefix rule + TIPS"
     assert apply_subset(_model(), 'all').n_params == sum(p.numel() for p in _model().parameters())
 
 
@@ -139,6 +153,58 @@ def test_nss():
     noisy = (clean + 0.1 * torch.randn(clean.shape, generator=g)).clamp(0, 1)
     assert float(model.distance(N.nss_features(noisy, color=True)).mean()) > \
         float(model.distance(N.nss_features(clean, color=True)).mean())
+    # ABC distance ablation (E3): diagonal / identity precision; Mahalanobis is the default
+    tf = torch.randn(40, 5, generator=g) @ torch.randn(5, 5, generator=g) + 3.0
+    q = torch.randn(7, 5, generator=g) + 3.0
+    mh, dg, eu = (N.GaussianModel(tf, metric=m) for m in ('mahal', 'diag', 'euclid'))
+    assert torch.equal(mh.distance(q), N.GaussianModel(tf).distance(q))
+    var = torch.diag(torch.linalg.inv(dg.prec))
+    ref = ((q.double() - tf.double().mean(0)) ** 2 / var).sum(1).float() / 5
+    assert torch.allclose(dg.distance(q), ref, rtol=1e-5), "diag: per-feature variance scaling"
+    ref = ((q.double() - tf.double().mean(0)) ** 2).sum(1).float() / 5
+    assert torch.allclose(eu.distance(q), ref, rtol=1e-5), "euclid: unscaled squared distance"
+    assert not torch.allclose(mh.distance(q), dg.distance(q)), "correlated features: full and diagonal differ"
+
+
+def test_gtmean_psnr():
+    from irtta.evaluation import compute_psnr_ssim, psnr_gtmean
+    gt = torch.rand(1, 3, 32, 32, generator=torch.Generator().manual_seed(2)) * 0.5 + 0.2
+    assert psnr_gtmean(gt * 0.6, gt) > 100, "a global exposure error is removed"
+    noisy = (gt + 0.05 * torch.randn(gt.shape, generator=torch.Generator().manual_seed(3))).clamp(0, 1)
+    assert abs(psnr_gtmean(noisy, gt) - compute_psnr_ssim(noisy, gt)[0]) < 0.2, "no exposure error: ~ PSNR"
+    assert psnr_gtmean(noisy * 0.6, gt) > compute_psnr_ssim(noisy * 0.6, gt)[0] + 3
+
+
+def test_tips_on_our_pairs():
+    """--subset dctta for ours (E1): TIPS masks from the target set; masked entries stay at theta_0, the others
+    move."""
+    from torch.utils.data import DataLoader
+    from irtta.config import get_args
+    from irtta.data import AdaptationPatchDataset, load_registry, resolve_bank, resolve_spec
+    from irtta.methods import TransferMethod
+    t = _setup_data()
+    a = get_args(['--ckpt', t['ckpt'], '--registry', t['reg'], '--source', 'tiny', '--target', 'Tiny',
+                  '--families', 'all', '--subset', 'dctta', '--lr', '1e-2', '--bank_patch', '64', '--bank_batch',
+                  '2', '--abc_fit_n', '8'])
+    reg = load_registry(t['reg'])
+    spec = resolve_spec('Tiny', reg)
+    a.target_task, a.bank_path = spec.task, resolve_bank(None, reg)
+    m = _model(5)
+    sub = apply_subset(m, 'dctta')
+    meth = TransferMethod(m, sub, a, 'cpu')
+    loader = DataLoader(AdaptationPatchDataset(spec.lq, spec.gt, patch_size=64, seed=0), batch_size=1)
+    meth.prepare(loader)
+    assert meth.fishers and meth.n_params_effective < meth.n_params_adapted
+    theta0 = {n: p.detach().clone() for n, p in m.named_parameters() if n in meth.theta0}
+    for _, x, _ in loader:
+        meth.step(x)
+    moved = 0
+    for n, p in m.named_parameters():
+        if n in meth.fishers and n in theta0:
+            mask = meth.fishers[n][1].bool()
+            assert torch.equal(p.detach()[mask], theta0[n][mask]), f"{n}: TIPS-masked entries moved"
+            moved += int((p.detach()[~mask] != theta0[n][~mask]).sum())
+    assert moved > 0, "no unmasked entry moved"
 
 
 def test_self_ensemble():
@@ -263,6 +329,20 @@ def test_end_to_end():
     r_dad = _run(['--method', 'dctta', '--backbone', 'adair', '--target', 'Tiny', '--perceptual_weight', '0'],
                  ckpt=t['ckpt_adair'])
     assert r_dad['run_id'].startswith('adair-dctta') and r_dad['steps'] == 3
+    # supplementary E1: DCTTA on our rank-16 update (no TIPS); ours on DCTTA's update constraint (TIPS)
+    r_dl = _run(['--method', 'dctta', '--target', 'Tiny', '--perceptual_weight', '0', '--subset', 'lora16',
+                 '--lr', '1e-4', '--tag', 'E1'])
+    assert r_dl['run_id'].startswith('dctta-lora16-none') and r_dl['steps'] == 3
+    assert r_dl['n_params_effective'] == r_dl['n_params_adapted']
+    r_od = _run(['--target', 'Tiny', '--families', 'all', '--subset', 'dctta', '--lr', '2e-4', '--max_steps', '2',
+                 '--tag', 'E1'])
+    assert r_od['run_id'].startswith('transfer-dctta-tips') and r_od['steps'] + r_od['skipped'] == 2
+    assert r_od['n_params_effective'] < r_od['n_params_adapted']
+    # supplementary E3: the ABC distance enters the id; E2: GT-mean PSNR in every result
+    r_e3 = _run(['--target', 'Tiny', '--families', 'all', '--abc_metric', 'euclid', '--max_steps', '2',
+                 '--tag', 'abcEuclid'])
+    assert 'am=euclid' in r_e3['run_id'] and r_e3['steps'] + r_e3['skipped'] == 2
+    assert all(r[k] == r[k] for r in (r_src, r_e3, r_od) for k in ('psnr_gtmean',))
     r_ad = _run(['--backbone', 'adair', '--target', 'Tiny', '--families', 'all', '--max_steps', '2', '--tag', 'F1'],
                 ckpt=t['ckpt_adair'])
     assert r_ad['run_id'].startswith('adair-transfer')
@@ -273,6 +353,9 @@ def test_end_to_end():
     subprocess.check_call([sys.executable, os.path.join(ROOT, 'tools', 'table.py'), res],
                           stdout=subprocess.DEVNULL)
     assert os.path.exists(os.path.join(res, 'table_main_3task.md'))
+    subprocess.check_call([sys.executable, os.path.join(ROOT, 'tools', 'table_supp.py'), res, res],
+                          stdout=subprocess.DEVNULL)
+    assert os.path.exists(os.path.join(res, 'table_supp_E1.md'))
 
 
 def main():

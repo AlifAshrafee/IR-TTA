@@ -204,7 +204,8 @@ def main(argv=None):
     predict_time = time.time() - t0
     write_rows(os.path.join(run_dir, 'per_image.csv'), rows)
     logger.info(f"{args.method}  PSNR {summary['psnr']:.3f}  SSIM {summary['ssim']:.4f}  "
-                f"Y-PSNR {summary['psnr_y']:.3f}  ({spec.name}, {args.source})")
+                f"Y-PSNR {summary['psnr_y']:.3f}  GT-mean PSNR {summary['psnr_gtmean']:.3f}  "
+                f"({spec.name}, {args.source})")
 
     adapt_time = t_steps + prepare_time
     result = {
@@ -218,6 +219,7 @@ def main(argv=None):
         'eval_alpha': 1.0, 'max_steps': args.max_steps, 'max_images': args.max_images,
         'cfg': config_suffix(args), 'seed': args.seed, 'dataset_seed': args.dataset_seed,
         'n_images': summary['n'], 'psnr': summary['psnr'], 'ssim': summary['ssim'], 'psnr_y': summary['psnr_y'],
+        'psnr_gtmean': summary['psnr_gtmean'],
         'steps': method.steps, 'skipped': method.skipped,
         'prepare_time_s': prepare_time, 'adapt_time_s': adapt_time, 'predict_time_s': predict_time,
         'total_time_s': time.time() - t_start, 'peak_mem_adapt_gb': peak_adapt, 'peak_mem_gb': _peak_gb(),

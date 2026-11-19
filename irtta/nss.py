@@ -81,11 +81,20 @@ def nss_features(x, color=False):
     return torch.stack(feats, dim=1)
 
 
+METRICS = ('mahal', 'diag', 'euclid')
+
+
 class GaussianModel:
     """N(mu, Sigma) of feature rows, Sigma shrunk toward its diagonal (``shrink``) for a stable inverse.
-    ``distance(f)`` = Mahalanobis^2 / D, about 1 for samples of the fitted distribution."""
+    ``distance(f)`` = d^T P d / D with d = f - mu and, by ``metric``:
+      mahal   P = Sigma^-1 (the method; about 1 for samples of the fitted distribution)
+      diag    P = diag(Sigma)^-1 (per-feature scaling only, no correlations; ablation)
+      euclid  P = I (raw features, no scaling by the target set; ablation)
+    The mean mu is the target set's in every case, so the metrics differ only in how a deviation is weighted."""
 
-    def __init__(self, feats, shrink=0.1, eps=1e-6):
+    def __init__(self, feats, shrink=0.1, eps=1e-6, metric='mahal'):
+        if metric not in METRICS:
+            raise ValueError(f"unknown metric '{metric}', choose from {METRICS}")
         f = feats.detach().double()
         if f.shape[0] < 2:
             raise ValueError("need at least 2 feature rows to fit a Gaussian")
@@ -95,7 +104,13 @@ class GaussianModel:
         cov = (1 - shrink) * cov + shrink * torch.diag(torch.diag(cov))
         cov = cov + eps * torch.eye(cov.shape[0], dtype=cov.dtype, device=cov.device) * max(
             float(torch.diag(cov).mean()), 1e-12)
-        self.prec = torch.linalg.inv(cov)
+        if metric == 'mahal':
+            self.prec = torch.linalg.inv(cov)
+        elif metric == 'diag':
+            self.prec = torch.diag(1.0 / torch.diag(cov))
+        else:
+            self.prec = torch.eye(cov.shape[0], dtype=cov.dtype, device=cov.device)
+        self.metric = metric
         self.n = f.shape[0]
         self.dim = f.shape[1]
 
@@ -120,4 +135,4 @@ def random_crop_batch(x, size, n, generator):
     return torch.cat(out, 0)
 
 
-__all__ = ['N_FEATURES', 'nss_features', 'GaussianModel', 'random_crop_batch', 'luminance']
+__all__ = ['N_FEATURES', 'METRICS', 'nss_features', 'GaussianModel', 'random_crop_batch', 'luminance']

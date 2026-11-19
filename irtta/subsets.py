@@ -6,6 +6,9 @@
 |             | projections: qkv / project_in / project_out in Restormer-family blocks)                         |
 | ``full``    | DCTTA's rule: top-level prefix filter (``irtta.backbones.TRAIN_PREFIXES[backbone]``; PromptIR:   |
 |             | prompt / encoder / decoder, identical to the release) + ``weight`` / ``bias`` leaves             |
+| ``dctta``   | DCTTA's update constraint: the ``full`` tensors + TIPS (``tips=True``: the method restores the  |
+|             | per-tensor top-60% Fisher entries to theta_0 after every step). For ours (supervision x update   |
+|             | constraint experiment); ``--method dctta`` maps it to ``full`` (it always applies TIPS)          |
 | ``all``     | every parameter (the random-initialisation control)                                             |
 | ``none``    | nothing (the pretrained model)                                                                  |
 
@@ -81,6 +84,7 @@ class Subset:
     params: list = field(default_factory=list)
     names: list = field(default_factory=list)
     lora_modules: dict = field(default_factory=dict)   # orig weight name -> LoRAConv1x1
+    tips: bool = False                                 # 'dctta': the method applies DCTTA's TIPS restoration
 
     @property
     def n_params(self):
@@ -93,14 +97,15 @@ def apply_subset(model, spec, *, lora_alpha=None, lora_scope=None, train_prefixe
     parts = [p.strip() for p in spec.split('+') if p.strip()]
     if not parts:
         raise ValueError("empty --subset")
-    exclusive = {'full', 'all', 'none'}
+    exclusive = {'full', 'dctta', 'all', 'none'}
     if any(p in exclusive for p in parts) and len(parts) > 1:
         raise ValueError(f"'{'/'.join(sorted(exclusive))}' cannot be combined with other parts: {spec}")
 
     sub = Subset(spec=spec)
-    if parts == ['full']:  # DCTTA's selection, through the very same functions (bit-identical)
+    if parts in (['full'], ['dctta']):  # DCTTA's selection, through the very same functions (bit-identical)
         configure_model(model, train_prefixes)
         sub.params, sub.names = collect_params(model)
+        sub.tips = parts == ['dctta']
         return sub
 
     # injections first: they create parameters

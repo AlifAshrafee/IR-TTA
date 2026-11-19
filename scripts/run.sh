@@ -21,6 +21,19 @@
 #   oracle    results/oracle, PromptIR 5-task blur / low-light: ours, the right family only, real pairs
 #   count     results/count, 5-task: adapted parameters that receive a gradient, ours and DCTTA (table_cost)
 #   tables    aggregate + paper tables (results/suite/table_*.md)
+#
+# Supplementary (seed 23; finished runs are skipped, so every stage can be re-run)
+#   e1        results/supp, $E1_BBS (promptir r2r) x $SETTINGS: supervision vs update constraint (tag E1).
+#             E1_PART=dctta: DCTTA's objective on our rank-16 update (lr 1e-4, no TIPS); E1_PART=ours: our pairs
+#             on DCTTA's update constraint (--subset dctta = prefix rule + TIPS, lr 2e-4); default both.
+#             The other two cells of the 2x2 are the released DCTTA and ours in results/suite.
+#   e2        results/supp, 5-task LOLv2-S and DPDD: pretrained and ours ($BBS), DCTTA (PromptIR), re-run for
+#             GT-mean PSNR (outputs are not saved; same seed, so PSNR equals results/suite)
+#   e3        results/suite, $BBS x $SETTINGS: ABC with diagonal Sigma_T (abcDiag) and Euclidean distance
+#             (abcEuclid); ABC_METRICS="diag" or "euclid" runs one of them (one per GPU)
+#   e5        (optional) results/suite, $E1_BBS x $SETTINGS: ABC budget k in $ABC_KS (tags abcK2, abcK4, abcK16)
+#   supptables  aggregate suite + supp; table.py (E3 rows in the ablation tables) and tools/table_supp.py
+#               (results/supp/table_supp_E1.md, _E2.md, _E5.md)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -167,6 +180,67 @@ stage_tables() {
   if [[ -f results/count/runs.csv ]]; then o="$o --count results/count"; fi
   python tools/table.py results/$EXP $o > /dev/null
   echo "tables: results/$EXP/table_*.md"
+}
+
+# ---------------------------------------------------------------------------------------------- supplementary
+E1_BBS=${E1_BBS:-"promptir r2r"}
+E1_PART=${E1_PART:-"dctta ours"}
+stage_e1() {
+  local EXP=supp B S M T P
+  for P in $E1_PART; do
+    for B in $E1_BBS; do for S in $SETTINGS; do
+      M=$(model_args $B $S) || continue
+      for T in ${TESTS[$S]}; do
+        case $P in
+          dctta) run --method dctta $M --target $T --subset lora16 --lr 1e-4 --tag E1 ;;
+          ours)  run $M --target $T --subset dctta --lr 2e-4 --tag E1 ;;
+          *) echo "unknown E1_PART '$P' (dctta | ours)" >&2; return 1 ;;
+        esac
+      done
+    done; done
+  done
+}
+
+stage_e2() {
+  local EXP=supp B M T
+  for B in $BBS; do
+    M=$(model_args $B 5task) || continue
+    for T in LOLv2_Syn DPDD; do
+      run --method source $M --target $T
+      ours $M --target $T
+      if [[ $B == promptir ]]; then run --method dctta $M --target $T; fi
+    done
+  done
+}
+
+ABC_METRICS=${ABC_METRICS:-"diag euclid"}
+declare -A AM_TAG=( [diag]=abcDiag [euclid]=abcEuclid )
+stage_e3() {
+  local A B S M T
+  for A in $ABC_METRICS; do
+    for B in $BBS; do for S in $SETTINGS; do
+      M=$(model_args $B $S) || continue
+      for T in ${TESTS[$S]}; do run $M --target $T --tag ${AM_TAG[$A]} --abc_metric $A; done
+    done; done
+  done
+}
+
+ABC_KS=${ABC_KS:-"2 4 16"}
+stage_e5() {
+  local K B S M T
+  for K in $ABC_KS; do
+    for B in $E1_BBS; do for S in $SETTINGS; do
+      M=$(model_args $B $S) || continue
+      for T in ${TESTS[$S]}; do run $M --target $T --tag abcK$K --abc_k $K; done
+    done; done
+  done
+}
+
+stage_supptables() {
+  EXP=suite stage_tables
+  python tools/aggregate.py results/supp
+  python tools/table_supp.py results/suite results/supp > /dev/null
+  echo "tables: results/supp/table_supp_*.md; E3 rows in results/suite/table_ablation_*.md"
 }
 
 mkdir -p results

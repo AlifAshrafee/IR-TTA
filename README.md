@@ -54,6 +54,16 @@ bash scripts/run.sh tables                  # -> results/suite/table_*.md
 | `ablation` | ours without ABC selection, colour statistics, exposure matching, or the under-exposure rule |
 | `oracle` | PromptIR 5-task blur / low-light: ours vs the right family vs real pairs of the test operator |
 
+Supplementary experiments (seed 23; `scripts/run.sh` header has the details):
+
+| stage | what |
+|---|---|
+| `e1` | `results/supp`, PromptIR + R2R: supervision vs update constraint. DCTTA's objective on our rank-16 LoRA (`--method dctta --subset lora16 --lr 1e-4`, no TIPS) and our pairs on DCTTA's update constraint (`--subset dctta` = its prefix rule + TIPS, `--lr 2e-4`); the other two cells are the main runs |
+| `e2` | `results/supp`, 5-task LOLv2-S and DPDD: pretrained, ours, DCTTA (PromptIR) re-run for GT-mean PSNR (`psnr_gtmean`, now in every result) |
+| `e3` | `results/suite`: ABC with a diagonal Σ_T (`--abc_metric diag`, tag abcDiag) or Euclidean distance (`euclid`, abcEuclid); rows of the ablation tables |
+| `e5` | optional, `results/suite`, PromptIR + R2R: ABC budget `--abc_k {2,4,16}` |
+| `supptables` | `tables` + `tools/table_supp.py` -> `results/supp/table_supp_E{1,2,5}.md` |
+
 A single run:
 
 ```bash

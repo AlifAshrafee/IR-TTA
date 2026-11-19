@@ -48,7 +48,9 @@ def get_parser():
     g.add_argument('--method', type=str, default='transfer', choices=sorted(METHOD_DEFAULTS),
                    help='transfer = ours | dctta (baseline) | source (pretrained, no adaptation) | identity (input)')
     g.add_argument('--subset', type=str, default=None,
-                   help='adapted parameters: lora<r> | full (DCTTA rule) | all | none (default: lora16 / full)')
+                   help="adapted parameters: lora<r> | full (DCTTA's prefix rule) | dctta (DCTTA's update constraint: "
+                        "prefix rule + TIPS restoration; = full for --method dctta) | all | none "
+                        "(default: lora16 / full)")
     g.add_argument('--lr', type=float, default=None, help='default: 1e-4 (ours), 2e-4 (dctta)')
     g.add_argument('--beta1', type=float, default=0.9)
     g.add_argument('--beta2', type=float, default=0.999)
@@ -73,6 +75,9 @@ def get_parser():
     g.add_argument('--abc_k', type=int, default=8,
                    help='ABC pair selection: k candidate degradations per clean crop, keep the one closest to the '
                         'target set in NSS features; 1 = off')
+    g.add_argument('--abc_metric', type=str, default='mahal', choices=['mahal', 'diag', 'euclid'],
+                   help='ABC distance to the target Gaussian: mahal (full Sigma_T, the method) | diag (diagonal '
+                        'Sigma_T) | euclid (unscaled); ablation')
     g.add_argument('--nss_color', action=argparse.BooleanOptionalAction, default=True,
                    help='add the dark-channel and saturation statistics to the NSS features')
     g.add_argument('--abc_fit_n', type=int, default=256, help='target crops for the target NSS Gaussian')
@@ -134,13 +139,17 @@ def finalize(args):
     for k in _METHOD_KEYS:
         if getattr(args, k, None) is None:
             setattr(args, k, d.get(k, 0.0))
+    if args.method == 'dctta' and args.subset == 'dctta':   # DCTTA always restores with TIPS: the released run
+        args.subset = 'full'
     if args.dataset_seed is None:
         args.dataset_seed = args.seed
     if args.source is None:
         args.source = infer_source(args.ckpt)
     if args.families == 'auto':
         args.families = SETTING_FAMILIES.get(args.source, 'all')
-    args.anchor = 'tips' if args.method == 'dctta' else 'none'   # run-id field (DCTTA restores entries with TIPS)
+    # run-id field: 'tips' when TIPS restores entries (DCTTA's own subset; ours with --subset dctta)
+    tips = (args.method == 'dctta' and not args.subset.startswith('lora')) or args.subset == 'dctta'
+    args.anchor = 'tips' if tips else 'none'
     args.regime = 'transductive'
     if (args.target is None) == (args.lq_dir is None):
         raise SystemExit("give exactly one of --target or --lq_dir/--gt_dir")
@@ -162,7 +171,8 @@ def get_args(argv=None):
 SEMANTIC_ARGS = OrderedDict([
     ('families', 'fam'), ('bank', 'bk'), ('bank_max', 'bm'), ('bank_patch', 'bp'), ('bank_batch', 'bb'),
     ('exposure_match', 'em'), ('dark_rule', 'drl'), ('dark_ratio', 'drr'), ('dark_action', 'dac'),
-    ('nss_color', 'nc'), ('abc_k', 'abc'), ('abc_fit_n', 'abn'), ('ema_decay', 'ema'), ('iterations', 'it'),
+    ('nss_color', 'nc'), ('abc_k', 'abc'), ('abc_metric', 'am'), ('abc_fit_n', 'abn'), ('ema_decay', 'ema'),
+    ('iterations', 'it'),
     ('pixel_weight', 'pix'), ('perceptual_weight', 'vgg'), ('lowpass_weight', 'lp'), ('teacher_weight', 'tw'),
     ('beta1', 'b1'), ('beta2', 'b2'), ('tips_ratio', 'tr'), ('gen_train_steps', 'gts'),
     ('gen_sampling_steps', 'gss'), ('gen_lr', 'glr'), ('gen_sum_scale', 'gsc'), ('patch_size', 'ps'),
@@ -171,7 +181,8 @@ SEMANTIC_ARGS = OrderedDict([
 ])
 _ID_REFERENCE = dict(
     families='compose', bank=None, bank_max=300, bank_patch=192, bank_batch=4, exposure_match='fit',
-    dark_rule='none', dark_ratio=1.414, dark_action='skip', nss_color=False, abc_k=1, abc_fit_n=256, iterations=1,
+    dark_rule='none', dark_ratio=1.414, dark_action='skip', nss_color=False, abc_k=1, abc_metric='mahal',
+    abc_fit_n=256, iterations=1,
     teacher_weight=5.0, beta1=0.9, beta2=0.999, tips_ratio=0.6, gen_train_steps=5, gen_sampling_steps=5,
     gen_lr=2e-4, gen_sum_scale=0.01, patch_size=320, batch_size=1, epochs=1, max_steps=-1, max_images=0,
     crop_base=16, backbone_opts=[], cond_target=None, init='source', oracle_pairs=None)
@@ -180,7 +191,7 @@ _ID_METHOD_REFERENCE = {
     'transfer': dict(pixel_weight=1.0, perceptual_weight=0.0, lowpass_weight=0.0, ema_decay=0.999),
 }
 _OURS = ('families', 'bank', 'bank_max', 'bank_patch', 'bank_batch', 'exposure_match', 'dark_rule', 'dark_ratio',
-         'dark_action', 'nss_color', 'abc_k', 'abc_fit_n', 'oracle_pairs')
+         'dark_action', 'nss_color', 'abc_k', 'abc_metric', 'abc_fit_n', 'oracle_pairs')
 _DCTTA = ('teacher_weight', 'gen_train_steps', 'gen_sampling_steps', 'gen_lr', 'gen_sum_scale', 'tips_ratio')
 _OPTIM = ('ema_decay', 'iterations', 'pixel_weight', 'perceptual_weight', 'lowpass_weight', 'beta1', 'beta2',
           'patch_size', 'batch_size', 'epochs', 'max_steps')
@@ -195,9 +206,10 @@ def config_suffix(args):
         if args.dark_rule == 'none':
             skip |= {'dark_ratio', 'dark_action'}
         if args.abc_k <= 1:
-            skip |= {'nss_color', 'abc_fit_n'}
+            skip |= {'nss_color', 'abc_metric', 'abc_fit_n'}
         if args.oracle_pairs:   # real pairs: nothing is synthesised
-            skip |= {'families', 'dark_rule', 'dark_ratio', 'dark_action', 'nss_color', 'abc_k', 'abc_fit_n'}
+            skip |= {'families', 'dark_rule', 'dark_ratio', 'dark_action', 'nss_color', 'abc_k', 'abc_metric',
+                     'abc_fit_n'}
     ref = {**_ID_REFERENCE, **_ID_METHOD_REFERENCE.get(args.method, {})}
     parts = []
     for k, code in SEMANTIC_ARGS.items():
