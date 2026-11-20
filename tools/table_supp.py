@@ -61,11 +61,12 @@ def index(runs, seed, suite):
 def e1_table(suite, supp, seed):
     vals = {**index(suite, seed, True), **{k: v for k, v in index(supp, seed, False).items() if k[0] != 'source'}}
     groups = [(bb, s) for bb in E1_BBS for s in ('3task', '5task')]
-    head = ['Objective', 'Update constraint'] + [f"{T.NAMES[bb]} {s}" for bb, s in groups] + ['All', 'Improved']
+    head = (['Objective', 'Update constraint'] + [f"{T.NAMES[bb]} {s}" for bb, s in groups]
+            + ['All', 'Median', 'All w/o HIDE', 'Improved'])
     lines = ['| ' + ' | '.join(head) + ' |', '|' + '---|' * len(head)]
     missing = []
     for key, obj, upd in E1_CELLS:
-        allv, cells = [], []
+        allv, nohide, cells = [], [], []
         for bb, s in groups:
             d = []
             for t in T.TESTS[s]:
@@ -74,13 +75,17 @@ def e1_table(suite, supp, seed):
                     missing.append(f"{key}/{bb}/{s}/{t}")
                     continue
                 d.append(v[0] - src[0])
+                if t != 'HIDE':
+                    nohide.append(v[0] - src[0])
             allv += d
             n = len(T.TESTS[s])
             cells.append('' if not d else f"{sum(d) / len(d):+.2f}" + ('' if len(d) == n else f" ({len(d)}/{n})"))
         tot = sum(len(T.TESTS[s]) for _, s in groups)
         allc = '' if not allv else f"{sum(allv) / len(allv):+.2f}"
         imp = '' if not allv else f"{sum(x > 0 for x in allv)}/{len(allv)}" + ('' if len(allv) == tot else '*')
-        lines.append('| ' + ' | '.join([obj, upd] + cells + [allc, imp]) + ' |')
+        med = '' if not allv else f"{sorted(allv)[len(allv) // 2] if len(allv) % 2 else sum(sorted(allv)[len(allv) // 2 - 1:len(allv) // 2 + 1]) / 2:+.2f}"
+        nh = '' if not nohide else f"{sum(nohide) / len(nohide):+.2f}"
+        lines.append('| ' + ' | '.join([obj, upd] + cells + [allc, med, nh, imp]) + ' |')
     note = (f"Mean PSNR change (dB) vs the pretrained model over each setting's test sets (seed {seed}); "
             "'Improved': pairs with a gain. Lr follows the parameterisation (DCTTA's subset 2e-4, LoRA 1e-4); "
             "steps follow the objective (DCTTA: one pass over the target patches; ours: 500). DCTTA on LoRA: no "
@@ -138,6 +143,7 @@ def e5_table(suite, seed):
     """Mean change vs the pretrained model per k (None if no abcK run exists)."""
     tags = {f'abcK{k}': k for k in (2, 4, 16)}
     tags['F1'] = 8
+    tags['noABC'] = 1   # run.sh ablation: --abc_k 1, i.e. no selection
     vals, src = {}, {}
     for r in suite:
         bb = r.get('backbone') or 'promptir'
@@ -164,7 +170,7 @@ def e5_table(suite, seed):
             allv += d
             n = len(T.TESTS[s])
             cells.append('' if not d else f"{sum(d) / len(d):+.2f}" + ('' if len(d) == n else f" ({len(d)}/{n})"))
-        lab = f"{k} (ours)" if k == 8 else str(k)
+        lab = {8: '8 (ours)', 1: '1 (w/o ABC)'}.get(k, str(k))
         lines.append('| ' + ' | '.join([lab] + cells + ['' if not allv else f"{sum(allv) / len(allv):+.2f}"]) + ' |')
     return (f"Mean PSNR change (dB) vs the pretrained model (seed {seed}); '(k/n)': sets finished.\n\n"
             + '\n'.join(lines))
